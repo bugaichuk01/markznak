@@ -182,11 +182,12 @@ class EmissionOrder(Base):
         primary_key=True,
         default=uuid.uuid4,
     )
-    product_card_id: Mapped[uuid.UUID] = mapped_column(
+    product_card_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("product_cards.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
+    gtin: Mapped[str | None] = mapped_column(String(14), nullable=True)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[EmissionOrderStatus] = mapped_column(
         Enum(

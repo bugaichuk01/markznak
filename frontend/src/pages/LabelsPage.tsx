@@ -116,32 +116,34 @@ export default function LabelsPage() {
 
         <section className="flex min-h-[360px] items-center justify-center rounded-xl border border-slate-200 bg-slate-50 p-6 print:min-h-0 print:border-0 print:bg-white print:p-0">
           <div
-            className="relative overflow-hidden rounded bg-white text-slate-900 shadow-sm ring-1 ring-slate-200 print:rounded-none print:shadow-none print:ring-0"
+            className="overflow-hidden rounded bg-white text-slate-900 shadow-sm ring-1 ring-slate-200 print:rounded-none print:shadow-none print:ring-0"
             style={{
               width: `${previewWidth}px`,
               height: `${previewHeight}px`,
             }}
           >
-            <div className="absolute left-2 right-2 top-2 text-[10px] leading-tight">
-              <p className="line-clamp-2 font-semibold">{name || "Наименование товара"}</p>
-              <p className="mt-1">Арт: {article || "-"}</p>
-            </div>
-
-            <div className="absolute bottom-2 left-2 right-2 top-14 flex items-center justify-center">
-              {barcodeError ? (
-                <p className="text-center text-[11px] text-red-600">{barcodeError}</p>
-              ) : (
-                <canvas
-                  ref={canvasRef}
-                  className="h-full max-h-full w-full max-w-full object-contain"
-                  aria-label="DataMatrix preview"
-                />
-              )}
-            </div>
-
-            <div className="absolute bottom-2 left-2 right-2 text-[10px] leading-tight">
-              <p className="truncate">GTIN: {gtin || "-"}</p>
-              <p className="truncate">Размер: {productSize || "-"}</p>
+            <div className="flex h-full min-h-0 flex-row gap-1 px-2 py-2">
+              <div className="flex min-h-0 min-w-0 basis-[46%] flex-col justify-between text-[10px] leading-tight">
+                <div>
+                  <p className="line-clamp-3 font-semibold">{name || "Наименование товара"}</p>
+                  <p className="mt-1">Арт: {article || "-"}</p>
+                </div>
+                <div className="mt-1 space-y-0.5">
+                  <p className="break-all">GTIN: {gtin || "-"}</p>
+                  <p className="break-words">Размер: {productSize || "-"}</p>
+                </div>
+              </div>
+              <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center">
+                {barcodeError ? (
+                  <p className="text-center text-[9px] leading-snug text-red-600">{barcodeError}</p>
+                ) : (
+                  <canvas
+                    ref={canvasRef}
+                    className="h-full max-h-full w-full object-contain"
+                    aria-label="DataMatrix preview"
+                  />
+                )}
+              </div>
             </div>
           </div>
         </section>

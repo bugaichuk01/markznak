@@ -20,6 +20,11 @@ type DeviceApiShape = {
   connection_id?: string;
 };
 
+type DeviceFormDefaults = {
+  oms_id?: string | null;
+  connection_id?: string | null;
+};
+
 const INITIAL_FORM = {
   name: "",
   omsId: "",
@@ -49,11 +54,28 @@ export default function SettingsPage() {
     setIsLoading(true);
     setError(null);
     try {
+      const defaultsPromise = apiClient
+        .get<DeviceFormDefaults>("/devices/form-defaults")
+        .then((r) => r.data)
+        .catch(() => null);
+
       const response = await apiClient.get<DeviceApiShape[]>("/devices");
+      const defaults = await defaultsPromise;
+
       const nextDevices = Array.isArray(response.data)
         ? response.data.map(mapDevice)
         : [];
       setDevices(nextDevices);
+
+      const o = defaults?.oms_id?.trim();
+      const c = defaults?.connection_id?.trim();
+      if (o || c) {
+        setForm((prev) => ({
+          ...prev,
+          omsId: prev.omsId || o || "",
+          connectionId: prev.connectionId || c || "",
+        }));
+      }
     } catch (requestError) {
       console.error("Failed to load devices:", requestError);
       setError("Не удалось загрузить список устройств. Повторите попытку.");

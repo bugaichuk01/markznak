@@ -76,6 +76,13 @@ class DeviceResponse(BaseModel):
     created_at: datetime
 
 
+class DeviceFormDefaultsResponse(BaseModel):
+    """Значения из .env (SUZ_OMS_ID / SUZ_CONNECTION_ID) для подстановки в форму устройства."""
+
+    oms_id: str | None = None
+    connection_id: str | None = None
+
+
 # --- OrganizationSettings ---
 
 
@@ -227,6 +234,40 @@ class EmissionOrderCreate(BaseModel):
     quantity: int = Field(..., gt=0)
     status: EmissionOrderStatus = EmissionOrderStatus.CREATED
     suz_order_id: str | None = Field(None, min_length=1, max_length=128)
+    # Для техкарточек без GTIN: подставить код для отправки заказа в СУЗ (OMS требует gtin в теле заказа).
+    gtin: str | None = Field(None, min_length=8, max_length=14)
+
+    @field_validator("gtin", mode="before")
+    @classmethod
+    def _strip_optional_gtin(cls, v: object) -> object:
+        if v is None:
+            return None
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @field_validator("gtin")
+    @classmethod
+    def _digits_gtin_order(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not str(v).isdigit():
+            raise ValueError("GTIN должен содержать только цифры")
+        return v
+
+
+class EmissionOrderGtinPatch(BaseModel):
+    """Установка GTIN у локального заказа (например, карточка — техбез gtin)."""
+
+    gtin: str = Field(..., min_length=8, max_length=14)
+
+    @field_validator("gtin")
+    @classmethod
+    def _digits_only(cls, v: str) -> str:
+        s = v.strip()
+        if not s.isdigit():
+            raise ValueError("GTIN должен содержать только цифры")
+        return s
 
 
 class EmissionOrderUpdate(BaseModel):
@@ -240,7 +281,8 @@ class EmissionOrderResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    product_card_id: UUID
+    product_card_id: UUID | None
+    gtin: str | None
     quantity: int
     status: EmissionOrderStatus
     suz_order_id: str | None
@@ -253,6 +295,36 @@ class EmissionOrderStatusUpdateRequest(BaseModel):
 
 class MergeOrdersRequest(BaseModel):
     order_ids: list[UUID] = Field(..., min_length=2)
+
+
+class SuzSyncResponse(BaseModel):
+    inserted: int
+    updated: int
+    total_remote: int
+
+
+class SuzSendOrderPayload(BaseModel):
+    """Подробности ответа СУЗ при создании заказа (camelCase сохранён для отладки)."""
+
+    remote_order_id: str
+    payload: dict[str, Any]
+
+
+class SuzSendOrderResponse(BaseModel):
+    """Результат «Отправить в СУЗ»: обновлённый локальный заказ + краткая сводка ответа удалённой стороны."""
+
+    emission_order: EmissionOrderResponse
+    suz: SuzSendOrderPayload
+
+
+class SuzConnectivityDiagnosticsResponse(BaseModel):
+    """Диагностика TLS/DNS/curl до OMS без реального clientToken (фиктивный токен в запросе)."""
+
+    heuristic_hints: list[str]
+    suggested_base_url_when_nk_crptech_sandbox: str | None
+    probes: list[dict[str, Any]]
+    verdict: str
+    docs_pointer: str
 
 
 # --- LabelTemplate ---

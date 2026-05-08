@@ -6,10 +6,19 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db_session
-from schemas import DeviceCreate, DeviceResponse
+from schemas import DeviceCreate, DeviceFormDefaultsResponse, DeviceResponse
 from services import device_service
+from settings import get_settings
 
 router = APIRouter(tags=["devices"])
+
+
+@router.get("/devices/form-defaults", response_model=DeviceFormDefaultsResponse)
+async def device_form_defaults() -> DeviceFormDefaultsResponse:
+    s = get_settings()
+    oms = (s.suz_oms_id or "").strip() or None
+    conn = (s.suz_connection_id or "").strip() or None
+    return DeviceFormDefaultsResponse(oms_id=oms, connection_id=conn)
 
 
 @router.get("/devices", response_model=list[DeviceResponse])

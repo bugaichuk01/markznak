@@ -38,6 +38,27 @@ def _extract_base_url(send_url: str) -> str:
     return send_url[:idx] if idx > 0 else send_url.rstrip("/")
 
 
+def _active_cat_ids_from_categories(categories: list[dict[str, Any]]) -> list[int]:
+    """Идентификаторы активных категорий НК из ответа /v3/categories (порядок сохраняем)."""
+    seen: set[int] = set()
+    out: list[int] = []
+    for c in categories:
+        if not isinstance(c, dict) or c.get("category_active") is not True:
+            continue
+        raw = c.get("cat_id")
+        cid: int | None
+        if isinstance(raw, int):
+            cid = raw
+        elif isinstance(raw, str) and raw.isdigit():
+            cid = int(raw)
+        else:
+            cid = None
+        if cid is not None and cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return out
+
+
 async def _fetch_required_attrs(
     client: httpx.AsyncClient,
     send_url: str,
@@ -45,11 +66,20 @@ async def _fetch_required_attrs(
     headers: dict[str, str],
     tnved: str,
     cat_id: int | None,
-) -> list[dict[str, Any]]:
+    active_cat_ids: list[int],
+) -> tuple[list[dict[str, Any]], int | None]:
+    """
+    Возвращает обязательные атрибуты и cat_id, с которым сработал запрос (если был).
+
+    В sandbox НК запрос /v3/attributes по tnved часто отвечает 404; по cat_id из /v3/categories — 200.
+    """
     base_url = f"{_extract_base_url(send_url)}/v3/attributes"
     attempts: list[dict[str, Any]] = []
     if cat_id:
         attempts.append({"attr_type": "m", "cat_id": cat_id})
+    else:
+        for cid in active_cat_ids:
+            attempts.append({"attr_type": "m", "cat_id": cid})
     attempts.append({"attr_type": "m", "tnved": tnved})
 
     errors: list[str] = []
@@ -65,7 +95,13 @@ async def _fetch_required_attrs(
         payload = _serialize_response(response)
         result = payload.get("result")
         if isinstance(result, list):
-            return result
+            resolved: int | None = None
+            cid_raw = query.get("cat_id")
+            if isinstance(cid_raw, int):
+                resolved = cid_raw
+            elif isinstance(cid_raw, str) and cid_raw.isdigit():
+                resolved = int(cid_raw)
+            return result, resolved
         errors.append(
             "НК вернул неожиданный формат ответа по атрибутам "
             f"[url={response.request.url}]: {payload}"
@@ -347,14 +383,19 @@ async def send_product_card(card: ProductCard, cat_id: int | None = None) -> Nat
         )
         _validate_category_access(categories, card.tn_ved, cat_id)
 
-        required_attrs = await _fetch_required_attrs(
+        active_cat_ids = _active_cat_ids_from_categories(
+            [c for c in categories if isinstance(c, dict)]
+        )
+        required_attrs, attrs_resolved_cat_id = await _fetch_required_attrs(
             client=client,
             send_url=settings.national_catalog_send_url,
             auth_params=params,
             headers=headers,
             tnved=card.tn_ved,
             cat_id=cat_id,
+            active_cat_ids=active_cat_ids,
         )
+        effective_cat_id = cat_id if cat_id is not None else attrs_resolved_cat_id
         _, unresolved_required = _build_required_attrs(card, required_attrs)
         if unresolved_required:
             raise NationalCatalogIntegrationError(
@@ -363,7 +404,7 @@ async def send_product_card(card: ProductCard, cat_id: int | None = None) -> Nat
                 "Добавьте заполнение этих атрибутов в интеграцию."
             )
 
-        entry_variants = _build_entry_variants(card, cat_id, required_attrs)
+        entry_variants = _build_entry_variants(card, effective_cat_id, required_attrs)
         for attempt in range(1, settings.national_catalog_retry_attempts + 1):
             total_variants = len(entry_variants) * 3
             variant_idx = 0
