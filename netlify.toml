@@ -5,7 +5,8 @@
 [build]
   base = "frontend"
   command = "npm ci && npm run build"
-  publish = "frontend/dist"
+  # При заданном base путь publish относится к папке base, не к корню репозитория (не "frontend/dist").
+  publish = "dist"
 
 [build.environment]
   NODE_VERSION = "20"
