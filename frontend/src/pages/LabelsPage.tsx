@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import bwipjs from "bwip-js";
 import { Printer } from "lucide-react";
+import apiClient from "../api/client";
 
 type LabelSizeKey = "58x40" | "43x25";
 
@@ -22,9 +23,33 @@ export default function LabelsPage() {
   const [article, setArticle] = useState("ART-1001");
   const [gtin, setGtin] = useState("04607123456789");
   const [productSize, setProductSize] = useState("L");
-  const [markingCode, setMarkingCode] = useState("010460712345678921abcDEF1234567890");
+  const [markingCode, setMarkingCode] = useState("");
+  const [suzCodeOptions, setSuzCodeOptions] = useState<string[]>([]);
+  const [codesLoadError, setCodesLoadError] = useState<string | null>(null);
   const [barcodeError, setBarcodeError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadCodes() {
+      try {
+        const response = await apiClient.get<{ codes: string[] }>("/emission-orders/marking-codes-for-print");
+        if (!cancelled) {
+          setSuzCodeOptions(Array.isArray(response.data.codes) ? response.data.codes : []);
+          setCodesLoadError(null);
+        }
+      } catch (e) {
+        console.error("Failed to load marking code options:", e);
+        if (!cancelled) {
+          setCodesLoadError("Не удалось загрузить список кодов из СУЗ/УПД.");
+        }
+      }
+    }
+    void loadCodes();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const selectedSize = useMemo(
     () => LABEL_SIZES.find((item) => item.key === sizeKey) ?? LABEL_SIZES[0],
@@ -98,12 +123,31 @@ export default function LabelsPage() {
           <InputField id="label-article" label="Артикул" value={article} onChange={setArticle} />
           <InputField id="label-gtin" label="GTIN" value={gtin} onChange={setGtin} />
           <InputField id="label-product-size" label="Размер" value={productSize} onChange={setProductSize} />
-          <InputField
-            id="label-marking-code"
-            label="Произвольный код маркировки"
-            value={markingCode}
-            onChange={setMarkingCode}
-          />
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor="label-marking-code">
+              Код маркировки (СУЗ / УПД)
+            </label>
+            {codesLoadError ? <p className="mb-1 text-xs text-amber-700">{codesLoadError}</p> : null}
+            <input
+              id="label-marking-code"
+              type="text"
+              value={markingCode}
+              onChange={(event) => setMarkingCode(event.target.value)}
+              list="suz-marking-code-options"
+              placeholder={suzCodeOptions.length ? "Выберите из списка или вставьте код" : "Вставьте код или синхронизируйте заказы СУЗ"}
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
+            />
+            <datalist id="suz-marking-code-options">
+              {suzCodeOptions.map((code) => (
+                <option key={code} value={code} />
+              ))}
+            </datalist>
+            {suzCodeOptions.length > 0 ? (
+              <p className="mt-1 text-xs text-slate-500">
+                Подсказки из заказов СУЗ (после «Подтянуть из СУЗ») и кодов из документов УПД.
+              </p>
+            ) : null}
+          </div>
 
           <button
             type="submit"

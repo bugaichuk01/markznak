@@ -286,7 +286,14 @@ class EmissionOrderResponse(BaseModel):
     quantity: int
     status: EmissionOrderStatus
     suz_order_id: str | None
+    suz_marking_codes: list[str] = Field(default_factory=list)
     created_at: datetime
+
+
+class MarkingCodePrintOptionsResponse(BaseModel):
+    """Коды для печати этикеток: из ответов СУЗ (при синхронизации) и из УПД."""
+
+    codes: list[str]
 
 
 class EmissionOrderStatusUpdateRequest(BaseModel):

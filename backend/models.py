@@ -199,6 +199,11 @@ class EmissionOrder(Base):
         default=EmissionOrderStatus.CREATED,
     )
     suz_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    suz_marking_codes: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=lambda: [],
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

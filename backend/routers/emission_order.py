@@ -11,6 +11,7 @@ from schemas import (
     EmissionOrderGtinPatch,
     EmissionOrderResponse,
     EmissionOrderStatusUpdateRequest,
+    MarkingCodePrintOptionsResponse,
     MergeOrdersRequest,
     SuzConnectivityDiagnosticsResponse,
     SuzSendOrderPayload,
@@ -36,6 +37,14 @@ async def list_emission_orders(
     db: AsyncSession = Depends(get_db_session),
 ) -> list[EmissionOrderResponse]:
     return await emission_order_service.get_orders(db)
+
+
+@router.get("/marking-codes-for-print", response_model=MarkingCodePrintOptionsResponse)
+async def list_marking_codes_for_print(
+    db: AsyncSession = Depends(get_db_session),
+) -> MarkingCodePrintOptionsResponse:
+    codes = await emission_order_service.list_marking_codes_for_print(db)
+    return MarkingCodePrintOptionsResponse(codes=codes)
 
 
 @router.get("/diagnostics/connectivity", response_model=SuzConnectivityDiagnosticsResponse)

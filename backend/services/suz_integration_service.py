@@ -31,10 +31,13 @@ class SuzIntegrationError(RuntimeError):
 
 
 _UOT_CREDENTIAL_HINT = (
-    " Обычно это несоответствие clientToken и omsId из URL: выпустите заголовок clientToken именно для "
-    "этого OMS UUID в том же контуре sandbox, следите чтобы токен не истёк и база СУЗ (SUZ_API_BASE_URL) совпадает "
-    "с контурами учётной записи."
+    " Обычно это несоответствие маркера и omsId из URL: для API v3 возьмите свежий Bearer-маркер "
+    "(SUZ_AUTH_TOKEN) из авторизации в том же контуре, что и SUZ_API_BASE_URL; legacy UUID — в SUZ_CLIENT_TOKEN. "
+    "Маркер должен быть выпущен для этого OMS UUID, не истечь и не быть «статическим», если контур его отклоняет."
 )
+
+
+_SUZ_MARKER_RELATED_CODES = frozenset({1090, 1140, 1160, 1170, 1370})
 
 
 def _as_bearer_header_value(token: str) -> str:
@@ -114,21 +117,32 @@ def _iter_suz_flat_errors(parsed: dict[str, Any]) -> list[str]:
 
 
 def _expects_uot_credential_notice(parsed: dict[str, Any]) -> bool:
-    """Признак ошибки 1090 / проверки учётных данных УОТ (не транспорт, не TLS)."""
-    ec = parsed.get("errorCode")
-    if ec == 1090 or ec == "1090":
+    """Ошибки маркера / учётных данных УОТ (не транспорт, не TLS): 1090, 1370 и см. ЦРПТ."""
+    ec_raw = parsed.get("errorCode")
+    try:
+        ec_int = int(ec_raw) if ec_raw is not None and str(ec_raw).strip().isdigit() else None
+    except (TypeError, ValueError):
+        ec_int = None
+    if ec_int in _SUZ_MARKER_RELATED_CODES or str(ec_raw) in {str(c) for c in _SUZ_MARKER_RELATED_CODES}:
         return True
     glo = parsed.get("globalErrors")
     if isinstance(glo, list):
         for item in glo:
             if isinstance(item, dict):
                 iec = item.get("errorCode")
-                if iec == 1090 or str(iec) == "1090":
+                try:
+                    iec_int = int(iec) if iec is not None and str(iec).strip().isdigit() else None
+                except (TypeError, ValueError):
+                    iec_int = None
+                if iec_int in _SUZ_MARKER_RELATED_CODES or str(iec) in {str(c) for c in _SUZ_MARKER_RELATED_CODES}:
                     return True
     msgs = _iter_suz_flat_errors(parsed)
     for m in msgs:
         low = m.lower()
-        if "1090" in m:
+        for code in _SUZ_MARKER_RELATED_CODES:
+            if str(code) in m:
+                return True
+        if "маркер" in low and "безопасности" in low:
             return True
         if ("учётных данных" in low or "учетных данных" in low) and "уот" in low:
             return True
@@ -162,7 +176,11 @@ def _format_suz_http_error_detail(*, http_code: int, url: str | None, body_text:
         else f"СУЗ вернула HTTP {http_code} для {url}: {snippet}"
     )
     low = snippet.lower()
-    if "учётных данных" in low or "учетных данных" in low:
+    if (
+        "учётных данных" in low
+        or "учетных данных" in low
+        or ("маркер" in low and "безопасности" in low)
+    ):
         base += _UOT_CREDENTIAL_HINT
     return base
 
@@ -495,6 +513,48 @@ def _as_order_dicts(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _extract_marking_codes_from_suz_order_raw(raw: dict[str, Any]) -> list[str]:
+    """Пытается вытащить КМ из типичных полей ответа списка/деталей заказа СУЗ (OMS)."""
+    acc: list[str] = []
+    for key in (
+        "cises",
+        "cisList",
+        "cisCodes",
+        "codes",
+        "packages",
+        "markingCodes",
+        "identificationCodes",
+        "kmList",
+        "serials",
+    ):
+        v = raw.get(key)
+        if v is None:
+            continue
+        if isinstance(v, str) and v.strip():
+            return [v.strip()]
+        if isinstance(v, list):
+            for item in v:
+                if isinstance(item, str) and item.strip():
+                    acc.append(item.strip())
+                elif isinstance(item, dict):
+                    c = _first_str(
+                        item,
+                        "cis",
+                        "cisId",
+                        "code",
+                        "value",
+                        "identificationCode",
+                        "cisValue",
+                        "markingCode",
+                        "requestedCis",
+                    )
+                    if c:
+                        acc.append(c.strip())
+            if acc:
+                break
+    return list(dict.fromkeys(acc))
+
+
 def _parse_remote_row(raw: dict[str, Any]) -> dict[str, Any] | None:
     order_id = _first_str(raw, "orderId", "order_id", "id", "orderID", "emissionOrderId")
     if not order_id:
@@ -502,11 +562,13 @@ def _parse_remote_row(raw: dict[str, Any]) -> dict[str, Any] | None:
     gtin = _normalize_gtin(_first_str(raw, "gtin", "GTIN", "productCode", "product_code", "barcode"))
     qty = _first_int(raw, "quantity", "qty", "orderQuantity", "order_quantity", "requestedQuantity")
     status_raw = _first_str(raw, "orderStatus", "order_status", "status", "state", "orderState")
+    marking_codes = _extract_marking_codes_from_suz_order_raw(raw)
     return {
         "order_id": order_id,
         "gtin": gtin,
         "quantity": max(1, qty or 1),
         "status_raw": status_raw or "",
+        "marking_codes": marking_codes,
     }
 
 
@@ -630,7 +692,7 @@ async def fetch_suz_orders_raw(*, oms_id: str | None = None) -> tuple[list[dict[
     """
     settings = get_settings()
     base = (settings.suz_api_base_url or "").strip().rstrip("/")
-    token = (settings.suz_client_token or "").strip()
+    token = (settings.suz_auth_token or settings.suz_client_token or "").strip()
     oms_resolved = (oms_id or settings.suz_oms_id or "").strip()
 
     if not base:
@@ -639,7 +701,8 @@ async def fetch_suz_orders_raw(*, oms_id: str | None = None) -> tuple[list[dict[
         )
     if not token:
         raise SuzIntegrationError(
-            "Не задан SUZ_CLIENT_TOKEN (заголовок clientToken после авторизации в API СУЗ)."
+            "Не задан токен авторизации СУЗ: укажите SUZ_AUTH_TOKEN (Bearer для API v3) "
+            "или SUZ_CLIENT_TOKEN как fallback."
         )
     if not oms_resolved:
         raise SuzIntegrationError(

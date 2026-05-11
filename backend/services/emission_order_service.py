@@ -9,7 +9,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Device, EmissionOrder, EmissionOrderStatus, ProductCard
+from models import Device, DocumentUPD, EmissionOrder, EmissionOrderStatus, ProductCard
 from schemas import EmissionOrderCreate
 from services.suz_integration_service import (
     SuzIntegrationError,
@@ -98,6 +98,22 @@ async def create_order(data: EmissionOrderCreate, db: AsyncSession) -> EmissionO
 async def get_orders(db: AsyncSession) -> list[EmissionOrder]:
     result = await db.scalars(select(EmissionOrder).order_by(EmissionOrder.created_at.desc()))
     return list(result.all())
+
+
+async def list_marking_codes_for_print(db: AsyncSession) -> list[str]:
+    """Уникальные КМ из кэша заказов СУЗ и из документов УПД."""
+    seen: dict[str, None] = {}
+    for order in (await db.scalars(select(EmissionOrder))).all():
+        for c in order.suz_marking_codes or []:
+            s = str(c).strip()
+            if s:
+                seen.setdefault(s, None)
+    for doc in (await db.scalars(select(DocumentUPD))).all():
+        for c in doc.marking_codes or []:
+            s = str(c).strip()
+            if s:
+                seen.setdefault(s, None)
+    return sorted(seen.keys())
 
 
 async def update_order_status(order_id: UUID, status_value: str, db: AsyncSession) -> EmissionOrder:
@@ -189,6 +205,12 @@ async def sync_orders_from_suz(db: AsyncSession) -> dict[str, int]:
         qty = int(row["quantity"])
         st = EmissionOrderStatus(map_suz_status_to_emission(row.get("status_raw") or ""))
         card = await _resolve_product_card_by_gtin(db, gtin)
+        raw_codes = row.get("marking_codes")
+        suz_codes: list[str] = (
+            [str(c).strip() for c in raw_codes if str(c).strip()]
+            if isinstance(raw_codes, list)
+            else []
+        )
 
         existing = await db.scalar(select(EmissionOrder).where(EmissionOrder.suz_order_id == suz_oid))
         if existing:
@@ -197,6 +219,8 @@ async def sync_orders_from_suz(db: AsyncSession) -> dict[str, int]:
             existing.gtin = gtin
             if card:
                 existing.product_card_id = card.id
+            if suz_codes:
+                existing.suz_marking_codes = suz_codes
             updated += 1
         else:
             db.add(
@@ -206,6 +230,7 @@ async def sync_orders_from_suz(db: AsyncSession) -> dict[str, int]:
                     quantity=qty,
                     status=st,
                     suz_order_id=suz_oid,
+                    suz_marking_codes=suz_codes,
                 )
             )
             inserted += 1

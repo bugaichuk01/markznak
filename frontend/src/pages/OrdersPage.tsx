@@ -12,6 +12,7 @@ type EmissionOrder = {
   quantity: number;
   status: EmissionOrderStatus;
   suz_order_id: string | null;
+  suz_marking_codes?: string[];
 };
 
 type ProductCardOption = {

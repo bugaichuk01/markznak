@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers import device, emission_order, excel, ozon, product_card, upd
 from settings import get_settings
 
-app = FastAPI(title="MarkZnak Clone API", version="0.1.0", docs_url="/docs")
+app = FastAPI(title="Знак API", version="0.1.0", docs_url="/docs")
 
 api_v1 = APIRouter(prefix="/api/v1")
 api_v1.include_router(device.router)
