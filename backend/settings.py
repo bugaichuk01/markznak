@@ -1,7 +1,11 @@
+import os
 from functools import lru_cache
+from urllib.parse import quote, quote_plus
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine.url import make_url
+from sqlalchemy.exc import ArgumentError
 
 
 class Settings(BaseSettings):
@@ -11,7 +15,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    database_url: str
+    database_url: str = Field(default="", validate_default=True)
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     edo_lite_send_url: str = "https://edo-api.crpt.ru/api/v1/document"
     edo_lite_auth_token: str | None = None
@@ -55,16 +59,58 @@ class Settings(BaseSettings):
 
     @field_validator("database_url", mode="before")
     @classmethod
-    def ensure_asyncpg_driver(cls, v: object) -> object:
-        """Render/Heroku дают postgresql://… — для SQLAlchemy async нужен драйвер asyncpg."""
-        if not isinstance(v, str):
-            return v
-        u = v.strip()
-        if u.startswith("postgres://"):
-            return "postgresql+asyncpg://" + u.removeprefix("postgres://")
-        if u.startswith("postgresql://") and not u.startswith("postgresql+asyncpg://"):
-            return "postgresql+asyncpg://" + u.removeprefix("postgresql://")
-        return u
+    def resolve_database_url(cls, v: object) -> str:
+        """Railway/Render: полный URI, пустая строка или только PG* — нормализуем под asyncpg."""
+        raw = v.strip() if isinstance(v, str) else ""
+
+        def from_env_uri() -> str:
+            return (
+                (os.environ.get("DATABASE_URL") or "").strip()
+                or (os.environ.get("DATABASE_PRIVATE_URL") or "").strip()
+                or (os.environ.get("DATABASE_PUBLIC_URL") or "").strip()
+            )
+
+        if not raw or "://" not in raw:
+            raw = from_env_uri()
+
+        if "${{" in raw or (raw.startswith("${") and "}" in raw):
+            raise ValueError(
+                "DATABASE_URL не подставился (осталась ссылка ${{…}}). "
+                "В Railway: Variables → Reference → Postgres → DATABASE_URL."
+            )
+
+        if not raw or "://" not in raw:
+            host = (os.environ.get("PGHOST") or "").strip()
+            user = (os.environ.get("PGUSER") or "").strip()
+            password = (os.environ.get("PGPASSWORD") or "").strip()
+            db = (os.environ.get("PGDATABASE") or "").strip()
+            port = (os.environ.get("PGPORT") or "5432").strip()
+            if host and user and db:
+                raw = (
+                    f"postgresql://{quote_plus(user)}:{quote_plus(password)}"
+                    f"@{host}:{port}/{quote(db, safe='')}"
+                )
+
+        if not raw or "://" not in raw:
+            raise ValueError(
+                "Задайте DATABASE_URL (postgresql://…) или подключите Postgres на Railway "
+                "и переменные PGHOST, PGUSER, PGDATABASE (и PGPASSWORD)."
+            )
+
+        if raw.startswith("postgres://"):
+            raw = "postgresql+asyncpg://" + raw.removeprefix("postgres://")
+        elif raw.startswith("postgresql://") and not raw.startswith("postgresql+asyncpg://"):
+            raw = "postgresql+asyncpg://" + raw.removeprefix("postgresql://")
+
+        try:
+            make_url(raw)
+        except ArgumentError as e:
+            raise ValueError(
+                "DATABASE_URL не разбирается как URL (спецсимволы в пароле — "
+                "URL-encode в панели или используйте Reference из Postgres)."
+            ) from e
+
+        return raw
 
 
 @lru_cache
