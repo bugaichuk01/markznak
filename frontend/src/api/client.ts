@@ -1,7 +1,10 @@
 import axios from "axios";
 
+const apiBase =
+  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "/api/v1";
+
 const apiClient = axios.create({
-  baseURL: "/api/v1",
+  baseURL: apiBase.replace(/\/+$/, ""),
   timeout: 15000,
 });
 

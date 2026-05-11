@@ -1,0 +1,17 @@
+# Netlify: статический фронтенд (Vite + React).
+# В панели Netlify задайте переменную VITE_API_BASE_URL (см. frontend/src/api/client.ts),
+# если API вынесен на отдельный хост. В CORS бэкенда добавьте URL сайта Netlify.
+
+[build]
+  base = "frontend"
+  command = "npm ci && npm run build"
+  publish = "frontend/dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# React Router: отдаём index.html для клиентских маршрутов
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
