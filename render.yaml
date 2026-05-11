@@ -1,0 +1,42 @@
+# Render Blueprint: Dashboard → New → Blueprint → выбрать этот репозиторий.
+# Создаётся: PostgreSQL + API (Docker) + статический фронт (React).
+#
+# Публичные URL фиксированы именами сервисов (не переименовывайте без правок ниже):
+#   API:   https://markznak-api.onrender.com
+#   Сайт: https://markznak-web.onrender.com
+#
+# Netlify (только фронт): в Build env задайте
+#   BACKEND_PROXY_TARGET=https://markznak-api.onrender.com
+# и в CORS бэкенда на Render добавьте ваш https://….netlify.app
+
+databases:
+  - name: markznak-db
+    databaseName: markznak
+    user: markznak
+
+services:
+  - type: web
+    name: markznak-api
+    runtime: docker
+    plan: free
+    dockerfilePath: docker/Dockerfile.backend
+    dockerContext: backend
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: markznak-db
+          property: connectionString
+      - key: CORS_ORIGINS
+        value: https://markznak-web.onrender.com,http://localhost:5173,http://127.0.0.1:5173
+
+  - type: web
+    name: markznak-web
+    runtime: static
+    rootDir: frontend
+    buildCommand: 'export VITE_API_BASE_URL="https://markznak-api.onrender.com/api/v1" && npm ci && npm run build'
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

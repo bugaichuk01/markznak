@@ -1,4 +1,5 @@
 # Netlify: статический фронтенд (Vite + React).
+# Полный стек (API+БД+фронт) из репозитория: см. render.yaml (Render Blueprint).
 #
 # API с того же домена (рекомендуется): в Build environment задайте
 #   BACKEND_PROXY_TARGET=https://<публичный-хост-вашего-FastAPI>
