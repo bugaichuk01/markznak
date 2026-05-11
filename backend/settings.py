@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,6 +52,19 @@ class Settings(BaseSettings):
     # Только группа «свет»: contractNumber и contractDate (строка YYYY-MM-DD).
     suz_order_contract_number: str = "SANDBOX-CONTRACT"
     suz_order_contract_date: str = "2026-01-01"
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def ensure_asyncpg_driver(cls, v: object) -> object:
+        """Render/Heroku дают postgresql://… — для SQLAlchemy async нужен драйвер asyncpg."""
+        if not isinstance(v, str):
+            return v
+        u = v.strip()
+        if u.startswith("postgres://"):
+            return "postgresql+asyncpg://" + u.removeprefix("postgres://")
+        if u.startswith("postgresql://") and not u.startswith("postgresql+asyncpg://"):
+            return "postgresql+asyncpg://" + u.removeprefix("postgresql://")
+        return u
 
 
 @lru_cache
