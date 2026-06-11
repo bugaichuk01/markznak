@@ -1,5 +1,9 @@
-import { ChangeEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  OPERATIONS_TAB_STORAGE_KEY,
+  type OperationsTab,
+} from "./OperationsPage";
 import axios from "axios";
 import { Search } from "lucide-react";
 import apiClient from "../api/client";
@@ -51,8 +55,8 @@ export default function CodesPage() {
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [printing, setPrinting] = useState(false);
-  const importInputRef = useRef<HTMLInputElement | null>(null);
   const limit = 50;
 
   function toggleCode(code: string) {
@@ -120,20 +124,34 @@ export default function CodesPage() {
     navigate("/upd");
   }
 
+  function navigateToOperationsTab(tab: OperationsTab, codesKey: string) {
+    sessionStorage.setItem(codesKey, JSON.stringify(Array.from(selectedCodes)));
+    sessionStorage.setItem(OPERATIONS_TAB_STORAGE_KEY, tab);
+    navigate("/operations");
+  }
+
   function handleIntroduce() {
-    sessionStorage.setItem(
-      "utilisationCodes",
-      JSON.stringify(Array.from(selectedCodes)),
-    );
-    navigate("/utilisation");
+    navigateToOperationsTab("utilisation", "utilisationCodes");
   }
 
   function handleWithdraw() {
-    sessionStorage.setItem(
-      "withdrawalCodes",
-      JSON.stringify(Array.from(selectedCodes)),
-    );
-    navigate("/withdrawal");
+    navigateToOperationsTab("withdrawal", "withdrawalCodes");
+  }
+
+  function handleRemark() {
+    sessionStorage.setItem("withdrawalCodes", JSON.stringify(Array.from(selectedCodes)));
+    sessionStorage.setItem("withdrawalType", "DAMAGE_LOSS");
+    sessionStorage.setItem("afterWithdrawal", "remark");
+    sessionStorage.setItem("remarkQuantity", String(selectedCodes.size));
+    window.location.href = "/withdrawal";
+  }
+
+  function handleReturn() {
+    navigateToOperationsTab("returns", "returnCodes");
+  }
+
+  function handleAggregate() {
+    navigateToOperationsTab("aggregation", "aggregationCodes");
   }
 
   async function handleCheckStatus() {
@@ -206,15 +224,7 @@ export default function CodesPage() {
     loadCodes();
   }, [search, filterGtin, page]);
 
-  function handleExportCSV() {
-    const csv = codes.map((c) => c.code).join("\n");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/plain" }));
-    a.download = "marking_codes.csv";
-    a.click();
-  }
-
-  async function handleImportCodes(event: ChangeEvent<HTMLInputElement>) {
+  async function handleImportCsv(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) {
       return;
@@ -228,20 +238,58 @@ export default function CodesPage() {
     setError(null);
 
     try {
-      const res = await apiClient.post<MarkingCodesImportResult>(
-        "/excel/import-marking-codes",
-        formData,
-      );
-      const { added, skipped, errors } = res.data;
-      setImportResult(
-        `Импорт завершён: добавлено ${added} кодов${skipped > 0 ? `, пропущено ${skipped}` : ""}${errors.length > 0 ? `. Ошибки: ${errors.join(", ")}` : ""}`,
-      );
+      const isXlsx = file.name.toLowerCase().endsWith(".xlsx");
+      if (isXlsx) {
+        const res = await apiClient.post<MarkingCodesImportResult>(
+          "/excel/import-marking-codes",
+          formData,
+        );
+        const { added, skipped, errors } = res.data;
+        setImportResult(
+          `Импорт завершён: добавлено ${added} кодов${skipped > 0 ? `, пропущено ${skipped}` : ""}${errors.length > 0 ? `. Ошибки: ${errors.join(", ")}` : ""}`,
+        );
+      } else {
+        const res = await apiClient.post<{
+          imported: number;
+          order_id: string;
+        }>("/emission-orders/codes/import-csv", formData);
+        const { imported, order_id } = res.data;
+        setImportResult(
+          `Импортировано ${imported} кодов (заказ ${order_id.slice(0, 8)}...)`,
+        );
+      }
       await loadCodes();
     } catch (err) {
       setError(formatApiError(err));
     } finally {
       setImporting(false);
       event.target.value = "";
+    }
+  }
+
+  async function handleExportCsv() {
+    setExporting(true);
+    setError(null);
+    try {
+      const params: Record<string, string> = {};
+      if (filterGtin) {
+        params.gtin = filterGtin;
+      }
+
+      const res = await apiClient.get("/emission-orders/codes/export-csv", {
+        params,
+        responseType: "blob",
+      });
+      const url = URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `codes_${new Date().toISOString().split("T")[0]}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(formatApiError(err));
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -254,23 +302,23 @@ export default function CodesPage() {
         description="Все скачанные КМ из заказов СУЗ. Импортируйте, проверяйте статус и отправляйте в печать или УПД."
         actions={
           <>
-            <input
-              ref={importInputRef}
-              type="file"
-              accept=".csv,.xlsx"
-              className="hidden"
-              onChange={(event) => void handleImportCodes(event)}
-            />
+            <label className="cursor-pointer rounded-lg bg-slate-600 px-4 py-1.5 text-sm text-white hover:bg-slate-700">
+              {importing ? "Импорт..." : "Импорт CSV/Excel"}
+              <input
+                type="file"
+                accept=".csv,.txt,.xlsx"
+                className="hidden"
+                disabled={importing}
+                onChange={(event) => void handleImportCsv(event)}
+              />
+            </label>
             <button
               type="button"
-              onClick={() => importInputRef.current?.click()}
-              disabled={importing}
-              className="btn-accent"
+              onClick={() => void handleExportCsv()}
+              disabled={exporting}
+              className="rounded-lg bg-slate-600 px-4 py-1.5 text-sm text-white hover:bg-slate-700 disabled:opacity-50"
             >
-              {importing ? "Импорт..." : "Импорт CSV/Excel"}
-            </button>
-            <button type="button" onClick={handleExportCSV} className="btn-primary">
-              Экспорт CSV ({total})
+              {exporting ? "Экспорт..." : `Экспорт CSV (${total})`}
             </button>
           </>
         }
@@ -303,6 +351,26 @@ export default function CodesPage() {
         <span className="rounded-xl bg-forest-50 px-3 py-2 text-sm font-medium text-forest-800">
           Всего: {total.toLocaleString("ru-RU")}
         </span>
+        {codes.length > 0 ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setSelectedCodes(new Set(codes.map((c) => c.code)))}
+              className="text-xs text-blue-600 hover:underline"
+            >
+              Выбрать все ({codes.length})
+            </button>
+            {selectedCodes.size > 0 ? (
+              <button
+                type="button"
+                onClick={() => setSelectedCodes(new Set())}
+                className="text-xs text-slate-400 hover:underline"
+              >
+                Снять выбор
+              </button>
+            ) : null}
+          </>
+        ) : null}
       </div>
 
       {importResult ? (
@@ -342,6 +410,23 @@ export default function CodesPage() {
               className="btn-sm btn-accent !bg-red-600 hover:!bg-red-700"
             >
               Вывести из оборота ({selectedCodes.size})
+            </button>
+            <button
+              type="button"
+              onClick={handleRemark}
+              className="btn-sm rounded-lg bg-orange-600 px-4 py-1.5 text-sm text-white hover:bg-orange-700"
+            >
+              Перемаркировать ({selectedCodes.size})
+            </button>
+            <button
+              type="button"
+              onClick={handleReturn}
+              className="btn-sm btn-accent !bg-teal-600 hover:!bg-teal-700"
+            >
+              Вернуть в оборот ({selectedCodes.size})
+            </button>
+            <button type="button" onClick={handleAggregate} className="btn-sm btn-accent">
+              Агрегировать ({selectedCodes.size})
             </button>
             <button type="button" onClick={handleCreateUpd} className="btn-sm btn-primary">
               Создать УПД ({selectedCodes.size})

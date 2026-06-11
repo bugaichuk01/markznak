@@ -49,6 +49,20 @@ type SuzSyncResult = {
   total_remote: number;
 };
 
+type ImportExcelResult = {
+  created: number;
+  errors: string[];
+  orders: Array<{
+    row: number;
+    order_id: string;
+    gtin: string;
+    quantity: number;
+    product_group: string;
+    release_method: string;
+    status: string;
+  }>;
+};
+
 type SuzOrderPayloadPreview = {
   body: Record<string, unknown>;
   body_string: string;
@@ -56,7 +70,6 @@ type SuzOrderPayloadPreview = {
   allowed_release_method_types: string[];
   gtin: string;
 };
-
 
 const statusLabel: Record<string, string> = {
   created: "Создан",
@@ -76,6 +89,13 @@ const statusColor: Record<string, string> = {
   rejected: "bg-red-100 text-red-700",
 };
 
+const RELEASE_METHOD_TYPES = [
+  { value: "PRODUCTION", label: "Производство (стандарт)" },
+  { value: "REMAINS", label: "Маркировка остатков" },
+  { value: "REMARK", label: "Перемаркировка (замена повреждённых)" },
+  { value: "REAPPLY", label: "Нанесение вне производства" },
+];
+
 export default function OrdersPage() {
   const [orders, setOrders] = useState<EmissionOrder[]>([]);
   const [cards, setCards] = useState<ProductCardOption[]>([]);
@@ -91,6 +111,7 @@ export default function OrdersPage() {
   const [selectedCardId, setSelectedCardId] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [orderGtin, setOrderGtin] = useState("");
+  const [releaseMethodType, setReleaseMethodType] = useState("PRODUCTION");
   const [gtinPatchOrderId, setGtinPatchOrderId] = useState<string | null>(null);
   const [gtinPatchValue, setGtinPatchValue] = useState("");
   const [isPatchingGtin, setIsPatchingGtin] = useState(false);
@@ -105,6 +126,7 @@ export default function OrdersPage() {
   const [isLoadingSendModal, setIsLoadingSendModal] = useState(false);
   const [fetchingCodes, setFetchingCodes] = useState<string | null>(null);
   const [closingOrder, setClosingOrder] = useState<string | null>(null);
+  const [importResult, setImportResult] = useState<ImportExcelResult | null>(null);
 
   const mergeableSelectedIds = useMemo(() => {
     const createdWithCard = new Set(
@@ -115,7 +137,6 @@ export default function OrdersPage() {
     return selectedOrderIds.filter((id) => createdWithCard.has(id));
   }, [orders, selectedOrderIds]);
 
-  /** Один выбранный черновик с GTIN, готовый к POST в СУЗ (можно отправить и из шапки). */
   const singleSelectedDraftForSuz = useMemo(() => {
     if (selectedOrderIds.length !== 1) {
       return null;
@@ -165,6 +186,24 @@ export default function OrdersPage() {
 
   useEffect(() => {
     void Promise.all([loadOrders(), loadCards()]);
+  }, []);
+
+  useEffect(() => {
+    const afterWithdrawal = sessionStorage.getItem("afterWithdrawal");
+    if (afterWithdrawal !== "remark") {
+      return;
+    }
+    sessionStorage.removeItem("afterWithdrawal");
+    const remarkQuantity = sessionStorage.getItem("remarkQuantity");
+    if (remarkQuantity) {
+      setQuantity(remarkQuantity);
+      sessionStorage.removeItem("remarkQuantity");
+    }
+    setReleaseMethodType("REMARK");
+    setIsModalOpen(true);
+    setSyncInfo(
+      "Повреждённые коды выведены из оборота. Закажите новые КМ с типом «Перемаркировка».",
+    );
   }, []);
 
   useEffect(() => {
@@ -331,6 +370,7 @@ export default function OrdersPage() {
       const payload: Record<string, unknown> = {
         product_card_id: selectedCardId,
         quantity: parsedQuantity,
+        release_method_type: releaseMethodType,
       };
       const g = orderGtin.trim();
       if (g.length >= 8) payload.gtin = g;
@@ -339,6 +379,7 @@ export default function OrdersPage() {
       setIsModalOpen(false);
       setQuantity("1");
       setOrderGtin("");
+      setReleaseMethodType("PRODUCTION");
       await loadOrders();
     } catch (requestError) {
       console.error("Failed to create emission order:", requestError);
@@ -419,6 +460,55 @@ export default function OrdersPage() {
     }
   }
 
+  async function handleImportExcel(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await apiClient.post<ImportExcelResult>(
+        "/emission-orders/import-excel-orders",
+        formData,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
+      setImportResult(res.data);
+      setError(null);
+      await loadOrders();
+    } catch (requestError) {
+      console.error("Failed to import orders from Excel:", requestError);
+      if (axios.isAxiosError(requestError)) {
+        const detail = requestError.response?.data?.detail;
+        if (typeof detail === "string" && detail.trim()) {
+          setError(detail);
+        } else {
+          setError("Ошибка импорта");
+        }
+      } else {
+        setError("Ошибка импорта");
+      }
+    }
+    e.target.value = "";
+  }
+
+  async function handleDownloadExcelTemplate() {
+    try {
+      const res = await apiClient.get("/emission-orders/excel-template", {
+        responseType: "blob",
+      });
+      const url = URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "order_template.xlsx";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (requestError) {
+      console.error("Failed to download Excel template:", requestError);
+      setError("Не удалось скачать шаблон Excel.");
+    }
+  }
+
   async function handleMergeOrders() {
     if (mergeableSelectedIds.length < 2) {
       return;
@@ -455,6 +545,22 @@ export default function OrdersPage() {
         description="Черновик создаётся локально («Заказать коды»); в СУЗ — кнопка в строке таблицы или «Отправить в СУЗ (выбранный)» после отметки одного черновика с GTIN. Список с сервера — «Подтянуть из СУЗ»."
         actions={
           <>
+            <button
+              type="button"
+              onClick={() => void handleDownloadExcelTemplate()}
+              className="btn-secondary"
+            >
+              ⬇ Шаблон Excel
+            </button>
+            <label className="btn-primary cursor-pointer">
+              📥 Загрузить заказы
+              <input
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(event) => void handleImportExcel(event)}
+              />
+            </label>
             <button
               type="button"
               onClick={() => void handleSyncFromSuz()}
@@ -508,6 +614,31 @@ export default function OrdersPage() {
         <Alert variant="success" onDismiss={() => setSyncInfo(null)} className="mb-6">
           {syncInfo}
         </Alert>
+      ) : null}
+
+      {importResult ? (
+        <div className="mb-6 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm">
+          <p className="font-medium text-emerald-700">
+            Создано {importResult.created} заказов
+          </p>
+          {importResult.errors.length > 0 ? (
+            <div className="mt-2">
+              <p className="font-medium text-amber-600">Ошибки:</p>
+              {importResult.errors.map((entry, index) => (
+                <p key={index} className="text-xs text-amber-600">
+                  {entry}
+                </p>
+              ))}
+            </div>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setImportResult(null)}
+            className="mt-2 text-xs text-slate-400 hover:text-slate-600"
+          >
+            Скрыть
+          </button>
+        </div>
       ) : null}
 
       <div className="table-container">
@@ -723,6 +854,29 @@ export default function OrdersPage() {
                   API СУЗ требует GTIN в теле заказа. Для 029… при отправке будет только REMARK без серийников.
                 </span>
               </label>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  Способ выпуска
+                </label>
+                <select
+                  value={releaseMethodType}
+                  onChange={(event) => setReleaseMethodType(event.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                >
+                  {RELEASE_METHOD_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+                {releaseMethodType === "REMARK" ? (
+                  <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                    Перемаркировка: сначала выведите повреждённые коды из оборота с причиной
+                    «Повреждение/утрата», затем закажите новые КМ здесь.
+                  </div>
+                ) : null}
+              </div>
 
               <div className="flex justify-end gap-2 pt-2">
                 <button type="button" onClick={() => setIsModalOpen(false)} className="btn-secondary">

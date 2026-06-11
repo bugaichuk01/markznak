@@ -22,10 +22,6 @@ function normalizeSignature(sig: string): string {
   return sig.replace(/\r\n/g, "").replace(/\n/g, "").trim();
 }
 
-/**
- * HTTP-клиент API СУЗ v3 (вызов с браузера — только если CORS разрешён на стенде).
- * В приложении основной путь — бэкенд-прокси с X-Signature от signingService.
- */
 export class SuzApiClient {
   private readonly http: AxiosInstance;
   private readonly omsId: string;

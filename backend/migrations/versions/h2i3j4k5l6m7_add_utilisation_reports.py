@@ -1,22 +1,11 @@
-"""add_utilisation_reports
-
-Revision ID: h2i3j4k5l6m7
-Revises: g1h2i3j4k5l6
-Create Date: 2026-06-08
-
-"""
-
 from typing import Sequence, Union
-
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
-
 revision: str = "h2i3j4k5l6m7"
 down_revision: Union[str, Sequence[str], None] = "g1h2i3j4k5l6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
-
 utilisation_status = postgresql.ENUM(
     "draft",
     "pending",
@@ -26,8 +15,6 @@ utilisation_status = postgresql.ENUM(
     name="utilisation_status",
     create_type=False,
 )
-
-
 def upgrade() -> None:
     op.execute(
         """
@@ -58,8 +45,6 @@ def upgrade() -> None:
         sa.Column("sent_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id"),
     )
-
-
 def downgrade() -> None:
     op.drop_table("utilisation_reports")
     op.execute("DROP TYPE IF EXISTS utilisation_status")

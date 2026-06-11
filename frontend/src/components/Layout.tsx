@@ -1,11 +1,14 @@
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 import apiClient from "../api/client";
+import { useAuth } from "../contexts/AuthContext";
 import {
-  ArrowDownCircle,
-  ArrowUpCircle,
+  Archive,
+  ClipboardList,
+  Download,
   FileText,
   Layers,
+  LayoutDashboard,
   Menu,
   Package,
   Printer,
@@ -17,21 +20,66 @@ import {
 } from "lucide-react";
 import { OrganicBlob } from "./ui/FloralDecor";
 
+const operationsPaths = [
+  "/operations",
+  "/codes",
+  "/utilisation",
+  "/withdrawal",
+  "/aggregation",
+  "/returns",
+];
+
+const homePaths = ["/", "/dashboard"];
+
 const primaryNav = [
+  { path: "/", label: "Главная", icon: LayoutDashboard, shortLabel: "Главная" },
   { path: "/catalog", label: "Национальный каталог", icon: Layers, shortLabel: "Каталог" },
   { path: "/orders", label: "Управление заказами", icon: Package, shortLabel: "Заказы" },
   { path: "/labels", label: "Печать этикеток", icon: Printer, shortLabel: "Этикетки" },
-  { path: "/codes", label: "Операции с КИЗами", icon: ScanLine, shortLabel: "КИЗы" },
+  { path: "/operations", label: "Операции с КИЗами", icon: ScanLine, shortLabel: "КИЗы" },
 ];
 
 const secondaryNav = [
-  { path: "/utilisation", label: "Ввод в оборот", icon: ArrowUpCircle },
-  { path: "/withdrawal", label: "Вывод из оборота", icon: ArrowDownCircle },
+  { path: "/marketplace", label: "Маркетплейсы", icon: ShoppingBag },
+  { path: "/remains", label: "Маркировка остатков", icon: Archive },
+  { path: "/label-designer", label: "Конструктор этикеток", icon: Layers },
+  { path: "/journal", label: "Журнал операций", icon: ClipboardList },
   { path: "/upd", label: "Документы УПД", icon: FileText },
+  { path: "/incoming-upd", label: "Приёмка УПД", icon: Download },
   { path: "/extra-fields", label: "Доп. поля", icon: Sparkles },
   { path: "/products", label: "Товары и Ozon", icon: ShoppingBag },
   { path: "/settings", label: "Настройки ЧЗ", icon: Settings },
 ];
+
+function UserPanel() {
+  const { user, isAdmin, logout } = useAuth();
+
+  return (
+    <div className="flex items-center gap-3">
+      {isAdmin && (
+        <Link
+          to="/admin"
+          className="px-3 py-1.5 text-xs bg-red-600 text-white rounded hover:bg-red-700"
+        >
+          Админ
+        </Link>
+      )}
+      <div className="flex items-center gap-2 text-sm text-slate-600">
+        <span className="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-bold">
+          {user?.username[0].toUpperCase()}
+        </span>
+        <span className="hidden sm:inline">{user?.username}</span>
+      </div>
+      <button
+        type="button"
+        onClick={logout}
+        className="text-xs text-slate-400 hover:text-slate-600"
+      >
+        Выйти
+      </button>
+    </div>
+  );
+}
 
 export default function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -119,7 +167,18 @@ export default function Layout() {
           {primaryNav.map((item) => {
             const Icon = item.icon;
             return (
-              <NavLink key={item.path} to={item.path} className={navLinkClass}>
+              <NavLink
+                key={item.path}
+                to={item.path}
+                className={navLinkClass}
+                isActive={(_, location) =>
+                  item.path === "/operations"
+                    ? operationsPaths.includes(location.pathname)
+                    : item.path === "/"
+                      ? homePaths.includes(location.pathname)
+                      : location.pathname === item.path
+                }
+              >
                 <Icon className="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
                 <span>{item.label}</span>
               </NavLink>
@@ -152,16 +211,22 @@ export default function Layout() {
       </aside>
 
       <div className="flex min-h-screen flex-col lg:pl-[280px] print:pl-0">
-        <div className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-sage-200/80 bg-white/85 px-4 backdrop-blur-xl lg:hidden print:hidden">
-          <button
-            type="button"
-            onClick={() => setMobileOpen(true)}
-            className="btn-ghost btn-sm !min-h-[40px] !px-2.5"
-            aria-label="Открыть меню"
-          >
-            <Menu className="h-5 w-5" />
-          </button>
-          <span className="text-sm font-bold tracking-tight text-sage-900">G-CODE</span>
+        <div className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b border-sage-200/80 bg-white/85 px-4 backdrop-blur-xl print:hidden">
+          <div className="flex items-center gap-3 lg:hidden">
+            <button
+              type="button"
+              onClick={() => setMobileOpen(true)}
+              className="btn-ghost btn-sm !min-h-[40px] !px-2.5"
+              aria-label="Открыть меню"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+            <span className="text-sm font-bold tracking-tight text-sage-900">
+              G-CODE
+            </span>
+          </div>
+          <div className="hidden lg:block" />
+          <UserPanel />
         </div>
 
         <nav
@@ -171,7 +236,12 @@ export default function Layout() {
           <div className="flex items-stretch justify-around px-1 pb-[env(safe-area-inset-bottom)]">
             {primaryNav.map((item) => {
               const Icon = item.icon;
-              const active = location.pathname === item.path;
+              const active =
+                item.path === "/operations"
+                  ? operationsPaths.includes(location.pathname)
+                  : item.path === "/"
+                    ? homePaths.includes(location.pathname)
+                    : location.pathname === item.path;
               return (
                 <NavLink
                   key={item.path}

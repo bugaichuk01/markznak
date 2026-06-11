@@ -1,25 +1,11 @@
-# Netlify: статический фронтенд (Vite + React).
-# Полный стек (API+БД+фронт) из репозитория: см. render.yaml (Render Blueprint).
-#
-# API с того же домена (рекомендуется): в Build environment задайте
-#   BACKEND_PROXY_TARGET=https://<публичный-хост-вашего-FastAPI>
-# (алиас: NETLIFY_BACKEND_ORIGIN). Без пути /api — как в docker-compose для Vite.
-# После сборки в dist появится _redirects:
-#   /api/* → BACKEND_PROXY_TARGET/api/*
-# В CORS бэкенда добавьте https://<ваш-сайт>.netlify.app
-#
-# Альтернатива: VITE_API_BASE_URL=https://<хост>/api/v1 — тогда прокси Netlify не нужен, нужен CORS.
-
 [build]
   base = "frontend"
   command = "npm ci && npm run build"
-  # При заданном base путь publish относится к папке base, не к корню репозитория (не "frontend/dist").
   publish = "dist"
 
 [build.environment]
   NODE_VERSION = "20"
 
-# React Router: отдаём index.html для клиентских маршрутов
 [[redirects]]
   from = "/*"
   to = "/index.html"

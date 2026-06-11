@@ -1,22 +1,11 @@
-"""add_withdrawal_reports
-
-Revision ID: j4k5l6m7n8o9
-Revises: i3j4k5l6m7n8
-Create Date: 2026-06-09
-
-"""
-
 from typing import Sequence, Union
-
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
-
 revision: str = "j4k5l6m7n8o9"
 down_revision: Union[str, Sequence[str], None] = "i3j4k5l6m7n8"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
-
 withdrawal_status = postgresql.ENUM(
     "draft",
     "pending",
@@ -26,8 +15,6 @@ withdrawal_status = postgresql.ENUM(
     name="withdrawal_status",
     create_type=False,
 )
-
-
 def upgrade() -> None:
     op.execute(
         """
@@ -59,8 +46,6 @@ def upgrade() -> None:
         sa.Column("sent_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id"),
     )
-
-
 def downgrade() -> None:
     op.drop_table("withdrawal_reports")
     op.execute("DROP TYPE IF EXISTS withdrawal_status")

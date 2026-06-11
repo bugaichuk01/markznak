@@ -6,8 +6,6 @@ type FloralDecorProps = {
 
 };
 
-
-
 export function FloralHeaderAccent({ className = "" }: { className?: string }) {
 
   return (
@@ -53,8 +51,6 @@ export function FloralHeaderAccent({ className = "" }: { className?: string }) {
   );
 
 }
-
-
 
 export function FloralEmptyState({ className = "" }: { className?: string }) {
 
@@ -136,8 +132,6 @@ export function FloralEmptyState({ className = "" }: { className?: string }) {
 
 }
 
-
-
 export function OrganicBlob({ className = "" }: { className?: string }) {
 
   return (
@@ -153,8 +147,6 @@ export function OrganicBlob({ className = "" }: { className?: string }) {
   );
 
 }
-
-
 
 export default function FloralDecor({ variant = "header", className = "" }: FloralDecorProps) {
 
@@ -181,5 +173,3 @@ export default function FloralDecor({ variant = "header", className = "" }: Flor
   return <FloralHeaderAccent className={className} />;
 
 }
-
-

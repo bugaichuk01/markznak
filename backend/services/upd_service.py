@@ -1,21 +1,14 @@
-"""Создание черновика УПД в БД."""
-
 from __future__ import annotations
-
 from uuid import UUID
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from models import DocumentUPD
 from schemas import DocumentStatus, UpdCreateRequest
-
-
-async def create_upd_draft(session: AsyncSession, data: UpdCreateRequest) -> DocumentUPD:
-    """
-    Сохраняет УПД со статусом draft.
-    Для commercial_edo XML пока не генерируем — только запись в БД.
-    """
+async def create_upd_draft(
+    session: AsyncSession,
+    data: UpdCreateRequest,
+    org_id: UUID | None = None,
+) -> DocumentUPD:
     doc = DocumentUPD(
         document_number=data.document_number.strip(),
         marking_codes=list(data.marking_codes),
@@ -31,15 +24,13 @@ async def create_upd_draft(session: AsyncSession, data: UpdCreateRequest) -> Doc
         buyer_kpp=data.buyer_kpp,
         buyer_name=data.buyer_name,
         buyer_address=data.buyer_address,
+        org_id=org_id,
     )
     session.add(doc)
     await session.commit()
     await session.refresh(doc)
     return doc
-
-
 async def get_upd_document(session: AsyncSession, document_id: UUID) -> DocumentUPD:
-    """Возвращает УПД-документ или возбуждает LookupError."""
     result = await session.execute(select(DocumentUPD).where(DocumentUPD.id == document_id))
     document = result.scalar_one_or_none()
     if document is None:

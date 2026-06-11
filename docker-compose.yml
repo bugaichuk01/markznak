@@ -2,9 +2,9 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-markznak}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-markznak}
-      POSTGRES_DB: ${POSTGRES_DB:-markznak}
+      POSTGRES_USER: ${POSTGRES_USER:-g-code}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-g-code}
+      POSTGRES_DB: ${POSTGRES_DB:-g-code}
     ports:
       - "5432:5432"
     volumes:
@@ -13,7 +13,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "pg_isready -U ${POSTGRES_USER:-markznak} -d ${POSTGRES_DB:-markznak}",
+          "pg_isready -U ${POSTGRES_USER:-g-code} -d ${POSTGRES_DB:-g-code}",
         ]
       interval: 5s
       timeout: 5s
@@ -34,8 +34,7 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      # Перекрывает DATABASE_URL из backend/.env (там часто localhost; в контейнере — хост db).
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://markznak:markznak@db:5432/markznak}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://g-code:g-code@db:5432/g-code}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
     volumes:
       - ./backend:/app

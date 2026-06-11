@@ -1,12 +1,11 @@
-"""Эндпоинты вывода КМ из оборота."""
-
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db_session
-from models import WithdrawalReport
+from dependencies import get_current_org, get_current_user
+from models import Organization, User, WithdrawalReport
 from schemas import (
     WithdrawalBodyPreview,
     WithdrawalReportCreate,
@@ -25,25 +24,34 @@ router = APIRouter(prefix="/withdrawal", tags=["withdrawal"])
 )
 async def create_report(
     data: WithdrawalReportCreate,
+    _: User = Depends(get_current_user),
+    org: Organization | None = Depends(get_current_org),
     db: AsyncSession = Depends(get_db_session),
 ) -> WithdrawalReportResponse:
     if not data.marking_codes:
         raise HTTPException(status_code=400, detail="Список кодов пуст")
     if len(data.marking_codes) > 5000:
         raise HTTPException(status_code=400, detail="Максимум 5000 кодов")
-    return await withdrawal_service.create_withdrawal_draft(data, db)
+    return await withdrawal_service.create_withdrawal_draft(
+        data, db, org_id=org.id if org else None
+    )
 
 
 @router.get("/", response_model=list[WithdrawalReportResponse])
 async def list_reports(
+    _: User = Depends(get_current_user),
+    org: Organization | None = Depends(get_current_org),
     db: AsyncSession = Depends(get_db_session),
 ) -> list[WithdrawalReportResponse]:
-    return await withdrawal_service.list_withdrawal_reports(db)
+    return await withdrawal_service.list_withdrawal_reports(
+        db, org_id=org.id if org else None
+    )
 
 
 @router.get("/{report_id}/body", response_model=WithdrawalBodyPreview)
 async def get_body_for_signing(
     report_id: UUID,
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> WithdrawalBodyPreview:
     try:
@@ -59,6 +67,7 @@ async def get_body_for_signing(
 async def send_report(
     report_id: UUID,
     payload: WithdrawalSendRequest,
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> WithdrawalReportResponse:
     try:
@@ -76,6 +85,7 @@ async def send_report(
 @router.delete("/{report_id}", status_code=204)
 async def delete_report(
     report_id: UUID,
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> None:
     report = await db.get(WithdrawalReport, report_id)

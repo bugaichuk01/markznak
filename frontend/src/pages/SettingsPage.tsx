@@ -323,6 +323,274 @@ function TokenStatusWidget() {
   );
 }
 
+type OrgResponse = {
+  id: string;
+  name: string;
+  inn: string | null;
+  kpp: string | null;
+  oms_id: string | null;
+  connection_id: string | null;
+  suz_api_url: string | null;
+  true_api_url: string | null;
+  is_active: boolean;
+  created_at: string;
+  has_wb_key: boolean;
+  has_ozon_key: boolean;
+};
+
+function OrganizationSettings() {
+  const [org, setOrg] = useState<OrgResponse | null>(null);
+  const [name, setName] = useState("");
+  const [inn, setInn] = useState("");
+  const [kpp, setKpp] = useState("");
+  const [omsId, setOmsId] = useState("");
+  const [connectionId, setConnectionId] = useState("");
+  const [wbApiKey, setWbApiKey] = useState("");
+  const [ozonClientId, setOzonClientId] = useState("");
+  const [ozonApiKey, setOzonApiKey] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await apiClient.get<OrgResponse[]>("/organizations/");
+        const active = res.data.find((o) => o.is_active) ?? res.data[0] ?? null;
+        if (active) {
+          setOrg(active);
+          setName(active.name);
+          setInn(active.inn ?? "");
+          setKpp(active.kpp ?? "");
+          setOmsId(active.oms_id ?? "");
+          setConnectionId(active.connection_id ?? "");
+        }
+      } catch {
+        setError("Не удалось загрузить организацию");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  async function handleSave(event: FormEvent) {
+    event.preventDefault();
+    if (!org) return;
+    setSaving(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const payload: Record<string, string | undefined> = {
+        name,
+        inn: inn || undefined,
+        kpp: kpp || undefined,
+        oms_id: omsId || undefined,
+        connection_id: connectionId || undefined,
+        wb_api_key: wbApiKey || undefined,
+        ozon_client_id: ozonClientId || undefined,
+        ozon_api_key: ozonApiKey || undefined,
+      };
+      const res = await apiClient.patch<OrgResponse>(
+        `/organizations/${org.id}`,
+        payload,
+      );
+      setOrg(res.data);
+      setWbApiKey("");
+      setOzonApiKey("");
+      setSuccess("Настройки организации сохранены");
+    } catch {
+      setError("Не удалось сохранить настройки организации");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleCreateOrg(event: FormEvent) {
+    event.preventDefault();
+    if (!name.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await apiClient.post<OrgResponse>("/organizations/", {
+        name: name.trim(),
+        inn: inn || undefined,
+        kpp: kpp || undefined,
+        oms_id: omsId || undefined,
+        connection_id: connectionId || undefined,
+        wb_api_key: wbApiKey || undefined,
+        ozon_client_id: ozonClientId || undefined,
+        ozon_api_key: ozonApiKey || undefined,
+      });
+      setOrg(res.data);
+      setWbApiKey("");
+      setOzonApiKey("");
+      setSuccess("Организация создана");
+    } catch {
+      setError("Не удалось создать организацию");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <section className="card mb-8 p-6">
+        <p className="text-sm text-sage-500">Загрузка организации...</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card mb-8 p-6">
+      <h2 className="text-lg font-semibold text-forest-950">Организация</h2>
+      <p className="mt-1 text-sm text-sage-500">
+        Реквизиты компании и ключи API маркетплейсов для вывода из оборота
+      </p>
+
+      {error ? (
+        <Alert variant="error" onDismiss={() => setError(null)} className="mt-4">
+          {error}
+        </Alert>
+      ) : null}
+      {success ? (
+        <Alert variant="success" onDismiss={() => setSuccess(null)} className="mt-4">
+          {success}
+        </Alert>
+      ) : null}
+
+      <form
+        className="mt-5 space-y-4"
+        onSubmit={org ? handleSave : handleCreateOrg}
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="flex flex-col gap-1.5">
+            <span className="label-text">Название организации</span>
+            <input
+              required
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="input-field"
+              placeholder="ООО Пример"
+            />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="label-text">ИНН</span>
+            <input
+              value={inn}
+              onChange={(e) => setInn(e.target.value)}
+              className="input-field font-mono"
+              placeholder="7707083893"
+              maxLength={12}
+            />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="label-text">КПП</span>
+            <input
+              value={kpp}
+              onChange={(e) => setKpp(e.target.value)}
+              className="input-field font-mono"
+              placeholder="770701001"
+              maxLength={9}
+            />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="label-text">OMS ID</span>
+            <input
+              value={omsId}
+              onChange={(e) => setOmsId(e.target.value)}
+              className="input-field font-mono text-xs"
+            />
+          </label>
+          <label className="flex flex-col gap-1.5 md:col-span-2">
+            <span className="label-text">Идентификатор соединения</span>
+            <input
+              value={connectionId}
+              onChange={(e) => setConnectionId(e.target.value)}
+              className="input-field font-mono text-xs"
+            />
+          </label>
+        </div>
+
+        <div className="border-t border-slate-200 pt-6">
+          <h3 className="font-semibold text-slate-700 mb-4 flex items-center gap-2">
+            🛍️ API ключи маркетплейсов
+          </h3>
+
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Wildberries — Statistics API токен
+              {org?.has_wb_key ? (
+                <span className="ml-2 text-xs text-emerald-600 font-normal">
+                  (ключ сохранён)
+                </span>
+              ) : null}
+            </label>
+            <input
+              type="password"
+              value={wbApiKey}
+              onChange={(e) => setWbApiKey(e.target.value)}
+              placeholder={
+                org?.has_wb_key
+                  ? "••••••••••••••••"
+                  : "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+              }
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+            />
+            <p className="text-xs text-slate-400 mt-1">
+              Личный кабинет WB → Настройки → Доступ к API → Статистика
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Ozon Client-ID
+              </label>
+              <input
+                type="text"
+                value={ozonClientId}
+                onChange={(e) => setOzonClientId(e.target.value)}
+                placeholder={org?.has_ozon_key ? "••••••••" : "12345678"}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Ozon API Key
+                {org?.has_ozon_key ? (
+                  <span className="ml-2 text-xs text-emerald-600 font-normal">
+                    (ключ сохранён)
+                  </span>
+                ) : null}
+              </label>
+              <input
+                type="password"
+                value={ozonApiKey}
+                onChange={(e) => setOzonApiKey(e.target.value)}
+                placeholder={
+                  org?.has_ozon_key
+                    ? "••••••••••••••••"
+                    : "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                }
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+              />
+            </div>
+          </div>
+          <p className="text-xs text-slate-400 mt-1">
+            Ozon Seller → Настройки → API ключи → Seller API
+          </p>
+        </div>
+
+        <button type="submit" disabled={saving} className="btn-primary">
+          {saving ? <Loader2 size={16} className="animate-spin" /> : null}
+          {org ? "Сохранить организацию" : "Создать организацию"}
+        </button>
+      </form>
+    </section>
+  );
+}
+
 function mapDevice(raw: DeviceApiShape, index: number): Device {
   return {
     id: raw.id ?? raw._id ?? `device-${index}`,
@@ -428,6 +696,8 @@ export default function SettingsPage() {
           {error}
         </Alert>
       ) : null}
+
+      <OrganizationSettings />
 
       <TokenStatusWidget />
 

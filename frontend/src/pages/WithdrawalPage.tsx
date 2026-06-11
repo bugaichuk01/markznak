@@ -69,6 +69,11 @@ export default function WithdrawalPage() {
 
   useEffect(() => {
     void loadReports();
+    const storedType = sessionStorage.getItem("withdrawalType");
+    if (storedType) {
+      setWithdrawalType(storedType);
+      sessionStorage.removeItem("withdrawalType");
+    }
     const stored = sessionStorage.getItem("withdrawalCodes");
     if (stored) {
       const codes = JSON.parse(stored) as string[];

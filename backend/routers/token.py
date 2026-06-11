@@ -1,5 +1,3 @@
-"""Эндпоинты управления токеном СУЗ."""
-
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -8,6 +6,8 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db_session
+from dependencies import get_current_org, get_current_user
+from models import Organization, User
 from services.token_service import get_token_info, get_true_api_token, save_token
 from settings import get_settings
 
@@ -37,17 +37,16 @@ class TokenInfoResponse(BaseModel):
 @router.post("/save")
 async def save_suz_token(
     data: TokenSaveRequest,
+    _: User = Depends(get_current_user),
+    org: Organization | None = Depends(get_current_org),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    """Сохранить clientToken СУЗ и опционально JWT True API."""
     expires_at = datetime.now(timezone.utc) + timedelta(hours=data.expires_in_hours)
-
     true_api_expires_at = None
     if data.true_api_token:
         true_api_expires_at = datetime.now(timezone.utc) + timedelta(
             hours=data.true_api_expires_in_hours
         )
-
     record = await save_token(
         db,
         token=data.token,
@@ -55,6 +54,7 @@ async def save_suz_token(
         oms_connection_id=data.oms_connection_id,
         true_api_token=data.true_api_token,
         true_api_expires_at=true_api_expires_at,
+        org_id=org.id if org else None,
     )
     return {
         "success": True,
@@ -65,11 +65,13 @@ async def save_suz_token(
 
 @router.get("/info", response_model=TokenInfoResponse)
 async def get_token_status(
+    _: User = Depends(get_current_user),
+    org: Organization | None = Depends(get_current_org),
     db: AsyncSession = Depends(get_db_session),
 ) -> TokenInfoResponse:
-    """Получить статус текущего токена."""
-    info = await get_token_info(db)
-    true_token = await get_true_api_token(db)
+    org_id = org.id if org else None
+    info = await get_token_info(db, org_id=org_id)
+    true_token = await get_true_api_token(db, org_id=org_id)
     info["true_api_token_configured"] = bool(true_token)
     info["true_api_token_preview"] = (
         true_token[:20] + "..." if true_token else None
@@ -78,8 +80,9 @@ async def get_token_status(
 
 
 @router.get("/auth-key")
-async def get_auth_key() -> dict:
-    """Прокси: GET {true_api_base_url}/api/v3/true-api/auth/key"""
+async def get_auth_key(
+    _: User = Depends(get_current_user),
+) -> dict:
     settings = get_settings()
     base = settings.true_api_base_url or "https://markirovka.sandbox.crptech.ru"
     async with httpx.AsyncClient(verify=settings.suz_tls_verify, timeout=30) as client:
@@ -95,8 +98,11 @@ class AuthSignInRequest(BaseModel):
 
 
 @router.post("/auth-signin/{oms_connection}")
-async def auth_signin(oms_connection: str, body: AuthSignInRequest) -> dict:
-    """Прокси: POST {true_api_base_url}/api/v3/true-api/auth/simpleSignIn/{id}"""
+async def auth_signin(
+    oms_connection: str,
+    body: AuthSignInRequest,
+    _: User = Depends(get_current_user),
+) -> dict:
     settings = get_settings()
     base = settings.true_api_base_url or "https://markirovka.sandbox.crptech.ru"
     async with httpx.AsyncClient(verify=settings.suz_tls_verify, timeout=30) as client:
@@ -115,11 +121,10 @@ async def auth_signin(oms_connection: str, body: AuthSignInRequest) -> dict:
 
 
 @router.post("/auth-signin-true-api")
-async def auth_signin_true_api(body: AuthSignInRequest) -> dict:
-    """
-    Прокси: POST .../simpleSignIn БЕЗ omsConnection
-    Возвращает JWT токен для True API (Authorization: Bearer)
-    """
+async def auth_signin_true_api(
+    body: AuthSignInRequest,
+    _: User = Depends(get_current_user),
+) -> dict:
     settings = get_settings()
     base = settings.true_api_base_url or "https://markirovka.sandbox.crptech.ru"
     async with httpx.AsyncClient(verify=settings.suz_tls_verify, timeout=30) as client:

@@ -1,28 +1,14 @@
-"""Add National Catalog and SUZ models
-
-Revision ID: c66ac45d3bde
-Revises: b8b8bb8f9d9e
-Create Date: 2026-04-26 13:10:32.317710
-
-"""
 from typing import Sequence, Union
-
 from alembic import op
 import sqlalchemy as sa
-
-
-# revision identifiers, used by Alembic.
 revision: str = 'c66ac45d3bde'
 down_revision: Union[str, Sequence[str], None] = 'b8b8bb8f9d9e'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
-
-
 def upgrade() -> None:
     product_card_type = sa.Enum("unit", "set", "tech_card", "bundle", name="product_card_type")
     product_card_status = sa.Enum("draft", "sent", "published", name="product_card_status")
     emission_order_status = sa.Enum("created", "pending", "available", "rejected", name="emission_order_status")
-
     op.create_table(
         "label_templates",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -54,10 +40,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["product_card_id"], ["product_cards.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
-
-
 def downgrade() -> None:
     op.drop_table("emission_orders")
     op.drop_table("product_cards")
     op.drop_table("label_templates")
-

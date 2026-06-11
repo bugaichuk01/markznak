@@ -1,9 +1,18 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import PageHeader from "../components/ui/PageHeader";
 import Alert from "../components/ui/Alert";
 import bwipjs from "bwip-js";
 import { Printer } from "lucide-react";
 import apiClient from "../api/client";
+
+type LabelTemplateOption = {
+  id: string;
+  name: string;
+  width_mm: number;
+  height_mm: number;
+  is_default: boolean;
+};
 
 type LabelSizeKey = "58x40" | "43x25";
 
@@ -43,17 +52,28 @@ async function printLabelPdf(params: {
   widthMm: number;
   heightMm: number;
   copies: number;
+  templateId?: string;
 }): Promise<void> {
-  const response = await apiClient.post(
-    "/labels/pdf/batch",
-    {
-      codes: params.codes,
-      width_mm: params.widthMm,
-      height_mm: params.heightMm,
-      copies: params.copies,
-    },
-    { responseType: "blob" },
-  );
+  const response = params.templateId
+    ? await apiClient.post(
+        "/labels/pdf/from-template",
+        {
+          template_id: params.templateId,
+          codes: params.codes,
+          copies: params.copies,
+        },
+        { responseType: "blob" },
+      )
+    : await apiClient.post(
+        "/labels/pdf/batch",
+        {
+          codes: params.codes,
+          width_mm: params.widthMm,
+          height_mm: params.heightMm,
+          copies: params.copies,
+        },
+        { responseType: "blob" },
+      );
 
   const url = URL.createObjectURL(new Blob([response.data], { type: "application/pdf" }));
   const win = window.open(url, "_blank");
@@ -77,7 +97,16 @@ export default function LabelsPage() {
   const [barcodeError, setBarcodeError] = useState<string | null>(null);
   const [isPrintingAll, setIsPrintingAll] = useState(false);
   const [copies, setCopies] = useState(1);
+  const [templates, setTemplates] = useState<LabelTemplateOption[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    apiClient
+      .get<LabelTemplateOption[]>("/labels/templates")
+      .then((r) => setTemplates(r.data))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const stored = sessionStorage.getItem("printCodes");
@@ -154,10 +183,22 @@ export default function LabelsPage() {
     };
   }, [markingCode]);
 
-  const selectedSize = useMemo(
-    () => LABEL_SIZES.find((item) => item.key === sizeKey) ?? LABEL_SIZES[0],
-    [sizeKey],
+  const selectedTemplate = useMemo(
+    () => templates.find((t) => t.id === selectedTemplateId),
+    [templates, selectedTemplateId],
   );
+
+  const selectedSize = useMemo(() => {
+    if (selectedTemplate) {
+      return {
+        key: sizeKey,
+        title: selectedTemplate.name,
+        widthMm: selectedTemplate.width_mm,
+        heightMm: selectedTemplate.height_mm,
+      };
+    }
+    return LABEL_SIZES.find((item) => item.key === sizeKey) ?? LABEL_SIZES[0];
+  }, [sizeKey, selectedTemplate]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -189,6 +230,7 @@ export default function LabelsPage() {
         widthMm: selectedSize.widthMm,
         heightMm: selectedSize.heightMm,
         copies,
+        templateId: selectedTemplateId || undefined,
       });
     } catch (err) {
       console.error("Ошибка генерации PDF:", err);
@@ -205,6 +247,7 @@ export default function LabelsPage() {
         widthMm: selectedSize.widthMm,
         heightMm: selectedSize.heightMm,
         copies,
+        templateId: selectedTemplateId || undefined,
       });
     } catch (err) {
       console.error("Ошибка генерации PDF:", err);
@@ -234,22 +277,52 @@ export default function LabelsPage() {
       <div className="grid gap-6 lg:grid-cols-[360px,1fr]">
         <form className="card space-y-5 p-5 print:hidden" onSubmit={handlePrint}>
           <div>
-            <label className="label-text" htmlFor="label-size">
-              Размер этикетки
+            <label className="label-text" htmlFor="label-template">
+              Шаблон этикетки
             </label>
-            <select
-              id="label-size"
-              value={sizeKey}
-              onChange={(event) => setSizeKey(event.target.value as LabelSizeKey)}
-              className="select-field"
-            >
-              {LABEL_SIZES.map((size) => (
-                <option key={size.key} value={size.key}>
-                  {size.title}
-                </option>
-              ))}
-            </select>
+            <div className="flex gap-2">
+              <select
+                id="label-template"
+                value={selectedTemplateId}
+                onChange={(e) => setSelectedTemplateId(e.target.value)}
+                className="select-field flex-1"
+              >
+                <option value="">Стандартный макет</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({t.width_mm}×{t.height_mm}мм)
+                  </option>
+                ))}
+              </select>
+              <Link
+                to="/label-designer"
+                className="btn-secondary !px-3"
+                title="Конструктор этикеток"
+              >
+                ✏️
+              </Link>
+            </div>
           </div>
+
+          {!selectedTemplateId && (
+            <div>
+              <label className="label-text" htmlFor="label-size">
+                Размер этикетки
+              </label>
+              <select
+                id="label-size"
+                value={sizeKey}
+                onChange={(event) => setSizeKey(event.target.value as LabelSizeKey)}
+                className="select-field"
+              >
+                {LABEL_SIZES.map((size) => (
+                  <option key={size.key} value={size.key}>
+                    {size.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <InputField id="label-name" label="Наименование товара" value={name} onChange={setName} />
           <InputField id="label-article" label="Артикул" value={article} onChange={setArticle} />

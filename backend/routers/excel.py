@@ -1,18 +1,11 @@
-"""Эндпоинты шаблонов Excel и импорта OZON ID."""
-
 import io
-
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from database import get_db_session
 from schemas import ExcelImportResult, ExcelTemplateRequest, MarkingCodesImportResult
 from services import excel_service
-
 router = APIRouter(tags=["excel"])
-
-
 @router.post("/excel/generate-template")
 async def generate_excel_template(
     payload: ExcelTemplateRequest,
@@ -25,8 +18,6 @@ async def generate_excel_template(
             "Content-Disposition": 'attachment; filename="ozon_mapping_template.xlsx"',
         },
     )
-
-
 @router.post("/excel/import-ozon-id", response_model=ExcelImportResult)
 async def import_ozon_ids(
     file: UploadFile = File(..., description="Заполненный .xlsx или .csv"),
@@ -49,8 +40,6 @@ async def import_ozon_ids(
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return ExcelImportResult(created=created, updated=updated, skipped=skipped)
-
-
 @router.post("/excel/import-marking-codes", response_model=MarkingCodesImportResult)
 async def import_marking_codes(
     file: UploadFile = File(..., description="CSV или Excel с кодами маркировки"),

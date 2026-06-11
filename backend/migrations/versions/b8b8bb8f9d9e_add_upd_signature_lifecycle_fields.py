@@ -1,24 +1,10 @@
-"""Add signature lifecycle fields to document_upds
-
-Revision ID: b8b8bb8f9d9e
-Revises: 24f7df1eac7a
-Create Date: 2026-04-19 10:00:00.000000
-
-"""
-
 from typing import Sequence, Union
-
 from alembic import op
 import sqlalchemy as sa
-
-
-# revision identifiers, used by Alembic.
 revision: str = "b8b8bb8f9d9e"
 down_revision: Union[str, Sequence[str], None] = "24f7df1eac7a"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
-
-
 def upgrade() -> None:
     op.add_column("document_upds", sa.Column("signature_format", sa.String(length=64), nullable=True))
     op.add_column("document_upds", sa.Column("signature_value", sa.Text(), nullable=True))
@@ -29,8 +15,6 @@ def upgrade() -> None:
     op.add_column("document_upds", sa.Column("external_message_id", sa.String(length=256), nullable=True))
     op.add_column("document_upds", sa.Column("external_status", sa.String(length=64), nullable=True))
     op.add_column("document_upds", sa.Column("external_response_payload", sa.JSON(), nullable=True))
-
-
 def downgrade() -> None:
     op.drop_column("document_upds", "external_response_payload")
     op.drop_column("document_upds", "external_status")

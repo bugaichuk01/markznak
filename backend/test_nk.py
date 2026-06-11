@@ -1,8 +1,6 @@
 import asyncio
 import httpx
 from settings import get_settings
-
-
 async def test():
     s = get_settings()
     params = {"apikey": s.national_catalog_api_key, "feed_id": "2481647", "verbose": "true"}
@@ -12,6 +10,4 @@ async def test():
         r = await client.get(f"{base}/v3/feed-status", params=params)
         print("Status:", r.status_code)
         print(r.text[:500])
-
-
 asyncio.run(test())

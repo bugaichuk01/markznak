@@ -1,16 +1,13 @@
-"""Эндпоинты для карточек товаров Национального каталога."""
-
 import io
 from typing import Annotated
 from uuid import UUID
-
 import openpyxl
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from database import get_db_session
-from models import ProductCard, ProductCardStatus
+from dependencies import get_current_org, get_current_user
+from models import Organization, ProductCard, ProductCardStatus, User
 from schemas import (
     ProductCardCreate,
     ProductCardListResponse,
@@ -19,24 +16,25 @@ from schemas import (
 )
 from services import product_card_service
 from services.national_catalog_integration_service import NationalCatalogIntegrationError
-
 router = APIRouter(prefix="/product-cards", tags=["National Catalog"])
-
-
 @router.post("/", response_model=ProductCardResponse, status_code=status.HTTP_201_CREATED)
 async def create_product_card(
     data: ProductCardCreate,
+    _: User = Depends(get_current_user),
+    org: Organization | None = Depends(get_current_org),
     db: AsyncSession = Depends(get_db_session),
 ) -> ProductCardResponse:
-    return await product_card_service.create_card(data, db)
-
-
+    return await product_card_service.create_card(
+        data, db, org_id=org.id if org else None
+    )
 @router.get("/", response_model=ProductCardListResponse)
 async def list_product_cards(
     gtin: str | None = None,
     status: str | None = None,
     limit: int = 500,
     offset: int = 0,
+    _: User = Depends(get_current_user),
+    org: Organization | None = Depends(get_current_org),
     db: AsyncSession = Depends(get_db_session),
 ) -> ProductCardListResponse:
     items, total = await product_card_service.list_cards(
@@ -45,6 +43,7 @@ async def list_product_cards(
         status=status,
         limit=limit,
         offset=offset,
+        org_id=org.id if org else None,
     )
     return ProductCardListResponse(
         items=[ProductCardResponse.model_validate(c) for c in items],
@@ -52,11 +51,10 @@ async def list_product_cards(
         limit=limit,
         offset=offset,
     )
-
-
 @router.post("/import-excel", response_model=dict)
 async def import_cards_from_excel(
     file: UploadFile = File(...),
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     fname = file.filename or ""
@@ -64,19 +62,18 @@ async def import_cards_from_excel(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Только .xlsx или .csv")
     body = await file.read()
     return await product_card_service.import_cards_from_file(fname, body, db)
-
-
 @router.get("/export-excel")
 async def export_cards_excel(
+    _: User = Depends(get_current_user),
+    org: Organization | None = Depends(get_current_org),
     db: AsyncSession = Depends(get_db_session),
 ) -> StreamingResponse:
-    """Экспорт всех карточек в Excel."""
-    cards = await product_card_service.get_cards(db)
-
+    cards, _ = await product_card_service.list_cards(
+        db, limit=10_000, offset=0, org_id=org.id if org else None
+    )
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Карточки НК"
-
     headers = [
         "GTIN",
         "Наименование",
@@ -94,7 +91,6 @@ async def export_cards_excel(
         "Дата создания",
     ]
     ws.append(headers)
-
     for card in cards:
         ws.append([
             card.gtin or "",
@@ -112,38 +108,33 @@ async def export_cards_excel(
             card.national_catalog_feed_status or "",
             card.created_at.strftime("%Y-%m-%d %H:%M") if card.created_at else "",
         ])
-
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=product_cards.xlsx"},
     )
-
-
 @router.post("/bulk-delete", response_model=dict)
 async def bulk_delete_cards(
     card_ids: Annotated[list[UUID], Body()],
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     deleted = await product_card_service.bulk_delete_cards(card_ids, db)
     return {"deleted": deleted}
-
-
 @router.post("/generate-gtin", response_model=dict)
-async def generate_gtin() -> dict:
+async def generate_gtin(
+    _: User = Depends(get_current_user),
+) -> dict:
     return {"gtin": product_card_service.generate_gtin()}
-
-
 @router.get("/attributes-for-tnved")
 async def get_attributes_for_tnved(
     tnved: str,
     cat_id: int | None = None,
+    _: User = Depends(get_current_user),
 ) -> dict:
-    """Обязательные и необязательные атрибуты НК для ТН ВЭД (для динамической формы карточки)."""
     from services.national_catalog_integration_service import (
         _active_cat_ids_from_categories,
         _fetch_categories_by_tnved,
@@ -151,20 +142,16 @@ async def get_attributes_for_tnved(
         _fetch_required_attrs,
     )
     from settings import get_settings
-
     import httpx
-
     settings = get_settings()
     if not settings.national_catalog_send_url:
         return {"attrs": [], "optional_attrs": [], "categories": [], "error": "НК не настроен"}
-
     params: dict[str, str] = {}
     headers = {"Content-Type": "application/json; charset=utf-8"}
     if settings.national_catalog_api_key:
         params["apikey"] = settings.national_catalog_api_key
     elif settings.national_catalog_auth_token:
         headers["Authorization"] = f"Bearer {settings.national_catalog_auth_token}"
-
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             categories: list = []
@@ -183,7 +170,6 @@ async def get_attributes_for_tnved(
                     active_cat_ids = [cat_id]
                 else:
                     raise
-
             mandatory_attrs, resolved_cat_id = await _fetch_required_attrs(
                 client=client,
                 send_url=settings.national_catalog_send_url,
@@ -193,7 +179,6 @@ async def get_attributes_for_tnved(
                 cat_id=cat_id,
                 active_cat_ids=active_cat_ids,
             )
-
             optional_attrs = await _fetch_optional_attrs(
                 client=client,
                 send_url=settings.national_catalog_send_url,
@@ -203,7 +188,6 @@ async def get_attributes_for_tnved(
                 cat_id=cat_id or resolved_cat_id,
                 active_cat_ids=active_cat_ids,
             )
-
         return {
             "attrs": mandatory_attrs,
             "optional_attrs": optional_attrs,
@@ -213,15 +197,13 @@ async def get_attributes_for_tnved(
         }
     except Exception as e:
         return {"attrs": [], "optional_attrs": [], "categories": [], "error": str(e)}
-
-
 @router.get("/tnved-groups")
-async def get_tnved_groups() -> list[dict]:
+async def get_tnved_groups(
+    _: User = Depends(get_current_user),
+) -> list[dict]:
     from services.national_catalog_integration_service import _extract_base_url
     from settings import get_settings
-
     import httpx
-
     settings = get_settings()
     params: dict[str, str] = {}
     headers = {"Content-Type": "application/json"}
@@ -229,22 +211,17 @@ async def get_tnved_groups() -> list[dict]:
         params["apikey"] = settings.national_catalog_api_key
     elif settings.national_catalog_auth_token:
         headers["Authorization"] = f"Bearer {settings.national_catalog_auth_token}"
-
     base_url = _extract_base_url(settings.national_catalog_send_url or "")
-
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.get(
             f"{base_url}/v3/categories",
             params=params,
             headers=headers,
         )
-
     if response.status_code != 200:
         return []
-
     data = response.json()
     categories = data.get("result", [])
-
     result: list[dict] = []
     for cat in categories:
         if not cat.get("category_active"):
@@ -259,73 +236,64 @@ async def get_tnved_groups() -> list[dict]:
                 "tnved": str(code),
                 "label": f"{code} {cat['cat_name']}",
             })
-
     result.sort(key=lambda x: x["tnved"])
     return result
-
-
 @router.get("/{card_id}", response_model=ProductCardResponse)
 async def get_product_card(
     card_id: UUID,
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> ProductCardResponse:
     card = await product_card_service.get_card(card_id, db)
     if card is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Карточка товара не найдена")
     return card
-
-
 @router.patch("/{card_id}", response_model=ProductCardResponse)
 async def update_product_card(
     card_id: UUID,
     data: ProductCardUpdate,
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> ProductCardResponse:
     card = await product_card_service.update_card(card_id, data, db)
     if card is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Карточка не найдена")
     return card
-
-
 @router.delete("/{card_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_product_card(
     card_id: UUID,
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> None:
     deleted = await product_card_service.delete_card(card_id, db)
     if not deleted:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Карточка товара не найдена")
-
-
 @router.post("/{card_id}/copy", response_model=ProductCardResponse, status_code=status.HTTP_201_CREATED)
 async def copy_product_card(
     card_id: UUID,
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> ProductCardResponse:
     card = await product_card_service.create_similar_card(card_id, db)
     if card is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Карточка товара не найдена")
     return card
-
-
 @router.post("/{card_id}/sync-feed-status", response_model=ProductCardResponse)
 async def sync_product_card_feed_status(
     card_id: UUID,
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> ProductCardResponse:
     return await product_card_service.sync_card_feed_status(card_id, db)
-
-
 @router.post("/{card_id}/send-to-nk", response_model=ProductCardResponse)
 async def send_card_to_nk(
     card_id: UUID,
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> ProductCardResponse:
-    """Отправить карточку в Национальный каталог."""
     card = await db.get(ProductCard, card_id)
     if card is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Карточка не найдена")
-
     try:
         result = await product_card_service.send_product_card(card, None)
         card.national_catalog_feed_id = result.feed_id

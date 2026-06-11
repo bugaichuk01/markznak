@@ -1,6 +1,5 @@
 import axios from "axios";
 
-/** Локально и на Netlify — относительный /api/v1. На Render можно задать только origin API. */
 function resolveApiBaseUrl(): string {
   const raw = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
   if (!raw) return "/api/v1";

@@ -1,15 +1,9 @@
-"""Эндпоинты интеграции с Ozon."""
-
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from database import get_db_session
 from schemas import OzonParseXmlResponse, OzonParsedProduct
 from services import xml_parser_service
-
 router = APIRouter(tags=["ozon"])
-
-
 @router.post("/ozon/parse-xml", response_model=OzonParseXmlResponse)
 async def parse_ozon_xml(
     file: UploadFile = File(..., description="XML-файл с товарами Ozon"),

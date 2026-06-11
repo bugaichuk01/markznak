@@ -1,7 +1,4 @@
-"""Интеграция с СУЗ OMS API v3 ЦРПТ (заказы, curl-fallback)."""
-
 from __future__ import annotations
-
 import asyncio
 import json
 import logging
@@ -9,72 +6,41 @@ import shutil
 import ssl
 from typing import Any
 from urllib.parse import urlencode
-
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from settings import Settings, get_settings
-
 logger = logging.getLogger(__name__)
-
-
 class SuzIntegrationError(RuntimeError):
-    """
-    Ошибка запроса к API СУЗ.
-
-    ``suggest_transport_diagnostics``: True только при сбое транспорта (TLS/handshake и т.п.);
-    при обычном HTTP-ответе с телом ошибки API подсказка про diagnostics неуместна.
-    """
-
     def __init__(self, message: str, *, suggest_transport_diagnostics: bool = False) -> None:
         super().__init__(message)
         self.suggest_transport_diagnostics = suggest_transport_diagnostics
-
-
 _UOT_CREDENTIAL_HINT = (
     " Обычно это несоответствие clientToken и omsId из URL: возьмите актуальный clientToken "
     "(SUZ_CLIENT_TOKEN) из ЛК СУЗ в том же контуре, что и SUZ_API_BASE_URL. "
     "Токен должен быть выпущен для этого OMS UUID и не истечь."
 )
-
-
 _SUZ_MARKER_RELATED_CODES = frozenset({1090, 1140, 1160, 1170, 1370})
-
-
 def _normalize_suz_client_token(token: str) -> str:
-    """Значение для заголовка clientToken (без префикса Bearer)."""
     raw = (token or "").strip()
     if raw.lower().startswith("bearer "):
         return raw[7:].strip()
     return raw
-
-
 def resolve_suz_api_token(settings: Settings | None = None) -> str:
-    """clientToken для OMS API v3: SUZ_CLIENT_TOKEN, иначе SUZ_AUTH_TOKEN."""
     s = settings or get_settings()
     raw = (s.suz_client_token or s.suz_auth_token or "").strip()
     return _normalize_suz_client_token(raw)
-
-
 async def resolve_suz_api_token_async(db: AsyncSession) -> str:
-    """Получить токен из БД или .env."""
     from services.token_service import get_active_token
-
     token = await get_active_token(db)
     if not token:
         raise SuzIntegrationError(
             "Не задан clientToken СУЗ. Обновите токен в настройках."
         )
     return _normalize_suz_client_token(token)
-
-
 def build_suz_v3_ping_url(base: str, oms_id: str) -> str:
-    """GET {base}/api/v3/ping?omsId=... — проверка доступности OMS API v3 (без product group в пути)."""
     b = (base or "").strip().rstrip("/")
     oms = (oms_id or "").strip()
     return f"{b}/api/v3/ping?{urlencode({'omsId': oms})}"
-
-
 def _build_suz_auth_headers(
     token: str,
     *,
@@ -82,11 +48,6 @@ def _build_suz_auth_headers(
     with_json_content_type: bool = True,
     x_signature: str | None = None,
 ) -> dict[str, str]:
-    """
-    Единые заголовки авторизации для СУЗ OMS API v3.
-
-    Заголовок clientToken (не Authorization: Bearer). Товарная группа в v3 не требуется.
-    """
     headers: dict[str, str] = {
         "Accept": "application/json",
         "clientToken": _normalize_suz_client_token(token),
@@ -100,17 +61,10 @@ def _build_suz_auth_headers(
         if sig:
             headers["X-Signature"] = sig
     return headers
-
-
 def dumps_suz_request_body(body: dict[str, Any]) -> str:
-    """Каноническая сериализация тела POST — та же строка подписывается в браузере (X-Signature)."""
     return json.dumps(body, ensure_ascii=False, separators=(",", ":"))
-
-
 def _iter_suz_flat_errors(parsed: dict[str, Any]) -> list[str]:
-    """Тексты из globalErrors/errors и смежных типовых полей ответа СУЗ."""
     acc: list[str] = []
-
     glob = parsed.get("globalErrors")
     if isinstance(glob, list):
         for item in glob:
@@ -129,7 +83,6 @@ def _iter_suz_flat_errors(parsed: dict[str, Any]) -> list[str]:
                     acc.append(f"ошибка {code}")
             elif isinstance(item, str) and item.strip():
                 acc.append(item.strip())
-
     errs = parsed.get("errors") or parsed.get("validationErrors") or parsed.get("fieldErrors")
     if isinstance(errs, list):
         for item in errs:
@@ -146,16 +99,11 @@ def _iter_suz_flat_errors(parsed: dict[str, Any]) -> list[str]:
                     acc.append(txt)
             elif isinstance(item, str) and item.strip():
                 acc.append(item.strip())
-
     raw_msg = parsed.get("message") or parsed.get("errorDescription") or parsed.get("description")
     if isinstance(raw_msg, str) and raw_msg.strip():
         acc.append(raw_msg.strip())
-
     return acc
-
-
 def _expects_uot_credential_notice(parsed: dict[str, Any]) -> bool:
-    """Ошибки маркера / учётных данных УОТ (не транспорт, не TLS): 1090, 1370 и см. ЦРПТ."""
     ec_raw = parsed.get("errorCode")
     try:
         ec_int = int(ec_raw) if ec_raw is not None and str(ec_raw).strip().isdigit() else None
@@ -185,17 +133,13 @@ def _expects_uot_credential_notice(parsed: dict[str, Any]) -> bool:
         if ("учётных данных" in low or "учетных данных" in low) and "уот" in low:
             return True
     return False
-
-
 def _format_suz_http_error_detail(*, http_code: int, url: str | None, body_text: str) -> str:
-    """Единое человекочитаемое сообщение для HTTP≠2xx без подсказок про diagnostics."""
     tail = body_text.strip()[:2000]
     parsed: Any = None
     try:
         parsed = json.loads(body_text)
     except (json.JSONDecodeError, ValueError):
         parsed = None
-
     if isinstance(parsed, dict):
         lines = _iter_suz_flat_errors(parsed)
         if lines:
@@ -206,7 +150,6 @@ def _format_suz_http_error_detail(*, http_code: int, url: str | None, body_text:
             if url:
                 msg += f" Запрос: {url}"
             return msg
-
     snippet = tail or "(пустое тело ответа)"
     base = (
         f"СУЗ отклонила запрос ({http_code}): {snippet}"
@@ -221,31 +164,18 @@ def _format_suz_http_error_detail(*, http_code: int, url: str | None, body_text:
     ):
         base += _UOT_CREDENTIAL_HINT
     return base
-
-
 def _apply_legacy_tls_hacks(ctx: ssl.SSLContext) -> None:
-    """Помогает на редких хостах с нестандартным TLS-хендшейком (OpenSSL в Docker)."""
     if hasattr(ssl, "OP_LEGACY_SERVER_CONNECT"):
         try:
             ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
         except ssl.SSLError:
             pass
-
-
 def suz_sandbox_ssl_context() -> ssl.SSLContext:
-    """
-    TLS без проверки сертификата и hostname для песочницы СУЗ (нет ГОСТ в стандартном Python).
-
-    Передаётся в httpx как ``verify=context`` наряду с ``verify=False`` — оба режима отключают проверку,
-    контекст дополнительно включает OP_LEGACY_SERVER_CONNECT там, где это доступно в OpenSSL.
-    """
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     _apply_legacy_tls_hacks(ctx)
     return ctx
-
-
 def _ctx_verified(cipher: str | None, tls12_only: bool) -> ssl.SSLContext | None:
     try:
         ctx = ssl.create_default_context()
@@ -257,8 +187,6 @@ def _ctx_verified(cipher: str | None, tls12_only: bool) -> ssl.SSLContext | None
         return ctx
     except ssl.SSLError:
         return None
-
-
 def _ctx_unverified(cipher: str | None, tls12_only: bool) -> ssl.SSLContext | None:
     try:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -273,14 +201,11 @@ def _ctx_unverified(cipher: str | None, tls12_only: bool) -> ssl.SSLContext | No
         return ctx
     except ssl.SSLError:
         return None
-
-
 def _ctx_insecure_versioned(
     tls_min: ssl.TLSVersion | None,
     tls_max: ssl.TLSVersion | None,
     cipher: str | None,
 ) -> ssl.SSLContext | None:
-    """Нестандартное сужение версий TLS (UNSUPPORTED_PROTOCOL / капризы стенда)."""
     try:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
@@ -295,15 +220,7 @@ def _ctx_insecure_versioned(
         return ctx
     except ssl.SSLError:
         return None
-
-
 def _suz_verify_candidates(settings: Settings) -> list[bool | ssl.SSLContext]:
-    """
-    Варианты verify для httpx.
-
-    Важно: SUZ_TLS_VERIFY=false отключает проверку сертификата, но не меняет набор шифров;
-    поэтому при verify=false всё равно перебираем явные SSLContext с разными cipher / TLS 1.2 only.
-    """
     ciphers: list[str | None] = [
         None,
         "DEFAULT:@SECLEVEL=0",
@@ -312,7 +229,6 @@ def _suz_verify_candidates(settings: Settings) -> list[bool | ssl.SSLContext]:
     ]
     tls12_modes = (False, True)
     acc: list[bool | ssl.SSLContext] = []
-
     if settings.suz_tls_verify:
         acc.append(True)
         if settings.suz_ssl_compat:
@@ -330,18 +246,8 @@ def _suz_verify_candidates(settings: Settings) -> list[bool | ssl.SSLContext]:
                 ctx = _ctx_unverified(ci, tls12)
                 if ctx is not None:
                     acc.append(ctx)
-
     return acc if acc else [True]
-
-
 def _suz_httpx_verify_options(settings: Settings) -> list[bool | ssl.SSLContext]:
-    """
-    Вариант verify для httpx к хостам СУЗ.
-
-    Если SUZ_TLS_VERIFY=false — сначала кастомный SSLContext без проверки (sandbox / нестандартные цепочки),
-    затем явный ``verify=False`` у AsyncClient и дальше перебор cipher/TLS версий.
-    Если true — только строгая проверка и ослабленные verified-контексты (SUZ_SSL_COMPAT).
-    """
     if not settings.suz_tls_verify:
         opts: list[bool | ssl.SSLContext] = [suz_sandbox_ssl_context(), False]
         for tls12 in (False, True):
@@ -361,32 +267,20 @@ def _suz_httpx_verify_options(settings: Settings) -> list[bool | ssl.SSLContext]
                     opts.append(x)
         return opts
     return _suz_verify_candidates(settings)
-
-
 def _curl_tls_flag_variants() -> tuple[tuple[str, ...], ...]:
-    """
-    Варианты флагов TLS для curl после неудачи httpx.
-
-    Раньше использовали только TLS 1.2 max — при этом TLS 1.3-only серверы дают:
-    curl: (35) ... unsupported protocol. Сначала даём curl согласовать версию сам.
-    """
     return (
         (),
         ("--tlsv1.3",),
         ("--tlsv1.2", "--tls-max", "1.2"),
     )
-
-
 async def _curl_get_json(
     full_url: str,
     token: str,
     timeout_sec: int,
     tls_extra: tuple[str, ...] = (),
 ) -> tuple[int, dict[str, Any] | list[Any] | None, str]:
-    """Обход через curl (другой стек TLS). Возвращает (http_code, json_or_none, raw_prefix)."""
     if not shutil.which("curl"):
         raise OSError("curl not found")
-
     args = [
         "curl",
         "-sS",
@@ -405,7 +299,6 @@ async def _curl_get_json(
         str(timeout_sec),
         full_url,
     ]
-
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
@@ -416,7 +309,6 @@ async def _curl_get_json(
     out_t = raw_out.decode(errors="replace")
     if proc.returncode != 0:
         raise OSError(err_t or out_t[:500] or f"curl exit {proc.returncode}")
-
     if "\n" not in out_t:
         raise OSError(out_t[:800])
     body, _sep, code_s = out_t.rpartition("\n")
@@ -424,14 +316,11 @@ async def _curl_get_json(
         code = int(code_s.strip())
     except ValueError as exc:
         raise OSError(out_t[:800]) from exc
-
     try:
         parsed: dict[str, Any] | list[Any] | None = json.loads(body) if body.strip() else None
     except json.JSONDecodeError:
         parsed = None
     return code, parsed, body[:2000]
-
-
 async def _curl_post_json(
     full_url: str,
     token: str,
@@ -442,10 +331,8 @@ async def _curl_post_json(
     body_bytes: bytes | None = None,
     x_signature: str | None = None,
 ) -> tuple[int, dict[str, Any] | list[Any] | None, str]:
-    """POST JSON в СУЗ OMS API v3 через curl — clientToken, опционально X-Signature."""
     if not shutil.which("curl"):
         raise OSError("curl not found")
-
     if body_bytes is None:
         body_bytes = dumps_suz_request_body(json_body or {}).encode("utf-8")
     args = [
@@ -478,7 +365,6 @@ async def _curl_post_json(
             full_url,
         ]
     )
-
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdin=asyncio.subprocess.PIPE,
@@ -490,7 +376,6 @@ async def _curl_post_json(
     out_t = raw_out.decode(errors="replace")
     if proc.returncode != 0:
         raise OSError(err_t or out_t[:500] or f"curl exit {proc.returncode}")
-
     if "\n" not in out_t:
         raise OSError(out_t[:800])
     body, _sep, code_s = out_t.rpartition("\n")
@@ -498,14 +383,11 @@ async def _curl_post_json(
         code = int(code_s.strip())
     except ValueError as exc:
         raise OSError(out_t[:800]) from exc
-
     try:
         parsed_post: dict[str, Any] | list[Any] | None = json.loads(body) if body.strip() else None
     except json.JSONDecodeError:
         parsed_post = None
     return code, parsed_post, body[:2000]
-
-
 def _first_str(d: dict[str, Any], *keys: str) -> str | None:
     for k in keys:
         v = d.get(k)
@@ -515,8 +397,6 @@ def _first_str(d: dict[str, Any], *keys: str) -> str | None:
         if s:
             return s
     return None
-
-
 def _first_int(d: dict[str, Any], *keys: str) -> int | None:
     for k in keys:
         v = d.get(k)
@@ -532,8 +412,6 @@ def _first_int(d: dict[str, Any], *keys: str) -> int | None:
         if s.isdigit():
             return int(s)
     return None
-
-
 def _normalize_gtin(raw: str | None) -> str | None:
     if not raw:
         return None
@@ -543,8 +421,6 @@ def _normalize_gtin(raw: str | None) -> str | None:
     if len(digits) > 14:
         digits = digits[-14:]
     return digits.zfill(14) if len(digits) <= 14 else digits[:14]
-
-
 def _as_order_dicts(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list):
         return [x for x in payload if isinstance(x, dict)]
@@ -556,10 +432,7 @@ def _as_order_dicts(payload: Any) -> list[dict[str, Any]]:
         if payload.keys() >= {"orderId", "gtin"} or payload.keys() >= {"order_id", "gtin"}:
             return [payload]
     return []
-
-
 def _extract_marking_codes_from_suz_order_raw(raw: dict[str, Any]) -> list[str]:
-    """Пытается вытащить КМ из типичных полей ответа списка/деталей заказа СУЗ (OMS)."""
     acc: list[str] = []
     for key in (
         "cises",
@@ -598,23 +471,14 @@ def _extract_marking_codes_from_suz_order_raw(raw: dict[str, Any]) -> list[str]:
             if acc:
                 break
     return list(dict.fromkeys(acc))
-
-
 def _determine_status(order_data: dict[str, Any]) -> str:
-    """
-    Маппинг статуса заказа СУЗ → EmissionOrderStatus по orderStatus и bufferStatus (OMS API v3).
-
-    Для orderStatus=READY решающим является bufferStatus первого буфера в ``buffers``.
-    """
     order_status = (
         _first_str(order_data, "orderStatus", "order_status", "status", "state", "orderState") or ""
     ).upper()
-
     buffers_raw = order_data.get("buffers")
     buffers: list[dict[str, Any]] = (
         [b for b in buffers_raw if isinstance(b, dict)] if isinstance(buffers_raw, list) else []
     )
-
     if order_status in ("CREATED", "PENDING", "APPROVED"):
         return "pending"
     if order_status == "DECLINED":
@@ -639,8 +503,6 @@ def _determine_status(order_data: dict[str, Any]) -> str:
             return "closed"
         return "pending"
     return "pending"
-
-
 def _parse_remote_row(raw: dict[str, Any]) -> dict[str, Any] | None:
     order_id = _first_str(raw, "orderId", "order_id", "id", "orderID", "emissionOrderId")
     if not order_id:
@@ -678,15 +540,10 @@ def _parse_remote_row(raw: dict[str, Any]) -> dict[str, Any] | None:
         "emission_status": emission_status,
         "marking_codes": marking_codes,
     }
-
-
 def map_suz_status_to_emission(status_raw: str | dict[str, Any]) -> str:
-    """Значение для EmissionOrderStatus (pending|available|exhausted|closed|rejected)."""
     if isinstance(status_raw, dict):
         return _determine_status(status_raw)
     return _determine_status({"orderStatus": status_raw})
-
-
 def _rows_from_payload(payload: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for raw in _as_order_dicts(payload):
@@ -694,8 +551,6 @@ def _rows_from_payload(payload: Any) -> list[dict[str, Any]]:
         if parsed:
             rows.append(parsed)
     return rows
-
-
 async def _suz_dispatch_httpx(
     *,
     method: str,
@@ -738,34 +593,33 @@ async def _suz_dispatch_httpx(
             logger.debug("SUZ httpx %s fail attempt %s: %s", method, idx + 1, exc)
             continue
     return None, last_err
-
-
 _PERFUMERY_API_GROUP = "perfumery"
 _PERFUMERY_GROUP_ALIASES = frozenset({"perfum", "perfumery", "perfume"})
-
 _RELEASE_METHOD_LOCAL = ("PRODUCED_IN_RF", "IMPORT", "REMARK", "REMAINS", "COMMISSION")
 _RELEASE_METHOD_GLOBAL = ("IMPORT", "REMARK", "REMAINS", "COMMISSION")
-
-
 def resolve_suz_api_product_group(product_group: str | None) -> str:
-    """ТГ «Духи и туалетная вода» в API СУЗ v3 — productGroup perfumery."""
     g = (product_group or _PERFUMERY_API_GROUP).strip().lower()
     if g in _PERFUMERY_GROUP_ALIASES:
         return _PERFUMERY_API_GROUP
     return g or _PERFUMERY_API_GROUP
-
-
 def release_method_options_for_gtin(gtin14: str) -> tuple[str, list[str]]:
-    """
-  Правила releaseMethodType для ТГ perfumery (см. API СУЗ 3.0).
-
-  GTIN 029* — только REMARK; 046/004 — локальный набор; иначе — глобальный.
-  """
     if gtin14.startswith("029"):
         return "REMARK", ["REMARK"]
     if gtin14.startswith("046") or gtin14.startswith("004"):
         return "REMARK", list(_RELEASE_METHOD_LOCAL)
     return "IMPORT", list(_RELEASE_METHOD_GLOBAL)
+_FORM_RELEASE_METHOD_ALIASES: dict[str, str] = {
+    "PRODUCTION": "PRODUCED_IN_RF",
+    "REAPPLY": "REMAINS",
+}
+
+
+def _normalize_release_method_type(raw: str | None, *, default: str, allowed: list[str]) -> str:
+    rmt = (raw or "").strip().upper()
+    rmt = _FORM_RELEASE_METHOD_ALIASES.get(rmt, rmt)
+    if rmt not in allowed:
+        return default
+    return rmt
 
 
 def build_suz_create_order_body(
@@ -778,20 +632,24 @@ def build_suz_create_order_body(
     release_method_type: str | None = None,
     producer: str | None = None,
 ) -> dict[str, Any]:
-    """
-    JSON-тело POST /api/v3/order?omsId=... (ТГ perfumery, API СУЗ 3.0).
-
-    serialNumberType OPERATOR — СУЗ генерирует серийные номера, если они не заданы явно.
-    """
-    _ = production_order_id  # legacy callers; не входит в v3 perfumery envelope
+    _ = production_order_id
     api_group = resolve_suz_api_product_group(product_group)
     default_rmt, allowed = release_method_options_for_gtin(gtin14)
-    rmt = (release_method_type or settings.suz_order_release_method_type or default_rmt).strip().upper()
-    if rmt not in allowed:
-        rmt = default_rmt
-
+    fallback = (
+        _normalize_release_method_type(
+            settings.suz_order_release_method_type,
+            default=default_rmt,
+            allowed=allowed,
+        )
+        if settings.suz_order_release_method_type
+        else default_rmt
+    )
+    rmt = _normalize_release_method_type(
+        release_method_type or fallback,
+        default=default_rmt,
+        allowed=allowed,
+    )
     serial_number_type = (settings.suz_serial_number_type or "OPERATOR").strip() or "OPERATOR"
-
     line: dict[str, Any] = {
         "gtin": gtin14,
         "quantity": int(quantity),
@@ -799,28 +657,28 @@ def build_suz_create_order_body(
         "templateId": int(settings.suz_marking_template_id),
         "cisType": settings.suz_product_cis_type,
     }
-
-    attributes: dict[str, Any] = {"releaseMethodType": rmt}
+    contact_person = (settings.suz_order_contact_person or "").strip()
+    create_method_type = (settings.suz_order_create_method_type or "SELF_MADE").strip() or "SELF_MADE"
+    attributes: dict[str, Any] = {
+        "releaseMethodType": rmt,
+        "createMethodType": create_method_type,
+    }
+    if contact_person:
+        attributes["contactPerson"] = contact_person
     prod_inn = (producer or "").strip()
-    if prod_inn:
+    if rmt == "REMARK" and prod_inn:
+        line["attributes"] = {"producer": prod_inn}
+    elif prod_inn:
         attributes["producer"] = prod_inn
-
     return {
         "productGroup": api_group,
         "products": [line],
         "attributes": attributes,
     }
-
-
 def suz_order_create_path(base: str) -> str:
     return f"{(base or '').strip().rstrip('/')}/api/v3/order"
-
-
 def suz_orders_list_path(base: str) -> str:
-    """Список заказов OMS API v3: GET /api/v3/order/list?omsId=..."""
     return f"{(base or '').strip().rstrip('/')}/api/v3/order/list"
-
-
 def _resolve_suz_connection_with_token(
     oms_id: str | None = None,
     token_override: str | None = None,
@@ -832,7 +690,6 @@ def _resolve_suz_connection_with_token(
     else:
         token = resolve_suz_api_token(settings)
     oms_resolved = (oms_id or settings.suz_oms_id or "").strip()
-
     if not base:
         raise SuzIntegrationError(
             "Не задан SUZ_API_BASE_URL (базовый URL СУЗ / шлюза OMS из инструкции к вашему контуру)."
@@ -846,45 +703,30 @@ def _resolve_suz_connection_with_token(
             "Не задан omsId: укажите SUZ_OMS_ID или добавьте устройство с OMS ID в настройках."
         )
     return base, token, oms_resolved
-
-
 async def _resolve_suz_connection_async(
     oms_id: str | None = None,
     db: AsyncSession | None = None,
     token_override: str | None = None,
 ) -> tuple[str, str, str]:
-    """Async версия — читает токен из БД, fallback на .env."""
     if token_override:
         return _resolve_suz_connection_with_token(oms_id, token_override)
     if db is not None:
         from services.token_service import get_active_token
-
         token_raw = await get_active_token(db)
         return _resolve_suz_connection_with_token(oms_id, token_raw)
     return _resolve_suz_connection_with_token(oms_id, None)
-
-
 async def fetch_suz_orders_raw(
     *,
     oms_id: str | None = None,
     token_override: str | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
-    """
-    GET /api/v3/order/list?omsId=...
-
-    Возвращает нормализованные строки заказов и URL запроса (для сообщений об ошибках).
-    """
     settings = get_settings()
     base, token, oms_resolved = _resolve_suz_connection_with_token(oms_id, token_override)
-
     path = suz_orders_list_path(base)
     params = {"omsId": oms_resolved}
     full_url = f"{path}?{urlencode(params)}"
-
     headers = _build_suz_auth_headers(token)
-
     logger.debug("fetch_suz_orders_raw: GET %s params=%s", path, params)
-
     verify_opts = _suz_httpx_verify_options(settings)
     response, last_err = await _suz_dispatch_httpx(
         method="GET",
@@ -892,7 +734,6 @@ async def fetch_suz_orders_raw(
         headers=headers,
         params=params,
     )
-
     if response is not None:
         logger.debug(
             "fetch_suz_orders_raw: статус=%s тело=%s",
@@ -901,7 +742,6 @@ async def fetch_suz_orders_raw(
         )
     elif last_err is not None:
         logger.debug("fetch_suz_orders_raw: httpx не ответил, last_err=%s", last_err)
-
     if response is None and settings.suz_curl_fallback:
         tmax = max(1, int(settings.suz_timeout_seconds))
         for curl_tls in _curl_tls_flag_variants():
@@ -924,7 +764,6 @@ async def fetch_suz_orders_raw(
                 last_err = exc
                 label = "default TLS" if not curl_tls else " ".join(curl_tls)
                 logger.warning("SUZ curl fallback (%s) failed: %s", label, exc)
-
     if response is None:
         msg = (
             f"Не удалось установить TLS с СУЗ после {len(verify_opts)} вариантов httpx"
@@ -934,7 +773,6 @@ async def fetch_suz_orders_raw(
             "Если контур требует ГОСТ-TLS (КриптоПро), запросы из стандартного контейнера могут быть невозможны — используйте шлюз на стороне организации или машину с сертифицированным СКЗИ."
         )
         raise SuzIntegrationError(msg, suggest_transport_diagnostics=True) from last_err
-
     if response.status_code != 200:
         raise SuzIntegrationError(
             _format_suz_http_error_detail(
@@ -943,15 +781,11 @@ async def fetch_suz_orders_raw(
                 body_text=response.text,
             )
         )
-
     try:
         payload = response.json()
     except ValueError as exc:
         raise SuzIntegrationError(f"СУЗ вернула не-JSON: {response.text[:500]}") from exc
-
     return _rows_from_payload(payload), str(response.request.url)
-
-
 async def submit_suz_emission_order(
     *,
     oms_id: str | None,
@@ -960,11 +794,6 @@ async def submit_suz_emission_order(
     json_body: dict[str, Any] | None = None,
     token_override: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """
-    POST /api/v3/order?omsId=... — прокси: тело и X-Signature приходят с фронтенда (cadesplugin).
-
-    ``body_string`` передаётся в СУЗ как есть, без повторной сериализации (подпись привязана к байтам).
-    """
     settings = get_settings()
     base, token, oms_resolved = _resolve_suz_connection_with_token(oms_id, token_override)
     sig = (x_signature or "").replace("\r", "").replace("\n", "").strip()
@@ -973,7 +802,6 @@ async def submit_suz_emission_order(
             "Для создания заказа в СУЗ v3 нужна откреплённая подпись тела запроса (заголовок X-Signature). "
             "Подпишите JSON в браузере через КриптоПро ЭЦП Browser plug-in."
         )
-
     path = suz_order_create_path(base)
     params = {"omsId": oms_resolved}
     raw_body = (body_string or "").strip()
@@ -982,15 +810,12 @@ async def submit_suz_emission_order(
             raise SuzIntegrationError("Пустое тело запроса к СУЗ.")
         raw_body = dumps_suz_request_body(json_body)
     body_bytes = raw_body.encode("utf-8")
-
     try:
         order_body = json.loads(raw_body)
         logger.debug("SUZ order body: %s", json.dumps(order_body, ensure_ascii=False))
     except json.JSONDecodeError:
         logger.debug("SUZ order body (raw, not JSON): %s", raw_body[:4000])
-
     headers = _build_suz_auth_headers(token, x_signature=sig)
-
     verify_opts = _suz_httpx_verify_options(settings)
     response, last_err = await _suz_dispatch_httpx(
         method="POST",
@@ -999,7 +824,6 @@ async def submit_suz_emission_order(
         params=params,
         content=body_bytes,
     )
-
     full_url_post = f"{path}?{urlencode(params)}"
     if response is None and settings.suz_curl_fallback:
         tmax = max(1, int(settings.suz_timeout_seconds))
@@ -1032,7 +856,6 @@ async def submit_suz_emission_order(
                 last_err = exc
                 lbl = "default TLS" if not curl_tls else " ".join(curl_tls)
                 logger.warning("SUZ curl POST (%s) failed: %s", lbl, exc)
-
     if response is None:
         msg = (
             f"Не удалось установить TLS при POST в СУЗ после {len(verify_opts)} вариантов httpx"
@@ -1042,7 +865,6 @@ async def submit_suz_emission_order(
             "SUZ_CURL_FALLBACK=true. Если ошибка сохраняется, контур может требовать ГОСТ-TLS без обхода."
         )
         raise SuzIntegrationError(msg, suggest_transport_diagnostics=True) from last_err
-
     if response.status_code not in (200, 201):
         raise SuzIntegrationError(
             _format_suz_http_error_detail(
@@ -1051,27 +873,18 @@ async def submit_suz_emission_order(
                 body_text=response.text,
             )
         )
-
     try:
         payload_any = response.json()
     except ValueError as exc:
         raise SuzIntegrationError(f"СУЗ вернула не-JSON: {response.text[:500]}") from exc
-
     if not isinstance(payload_any, dict):
         raise SuzIntegrationError(f"СУЗ вернула не объект JSON: {str(payload_any)[:500]}")
-
     remote_oid = _first_str(payload_any, "orderId", "order_id", "orderID")
     if not remote_oid:
         raise SuzIntegrationError(f"Ответ СУЗ не содержит orderId: {response.text[:2000]}")
-
     return remote_oid, payload_any
-
-
 def _resolve_suz_connection(oms_id: str | None = None) -> tuple[str, str, str]:
-    """Синхронный резолв — только .env (legacy)."""
     return _resolve_suz_connection_with_token(oms_id, None)
-
-
 async def _suz_get_json(
     path: str,
     *,
@@ -1079,21 +892,18 @@ async def _suz_get_json(
     oms_id: str | None = None,
     token_override: str | None = None,
 ) -> dict[str, Any] | list[Any]:
-    """GET к СУЗ v3 (без X-Signature): status, codes, ping."""
     settings = get_settings()
     base, token, oms_resolved = _resolve_suz_connection_with_token(oms_id, token_override)
     _ = oms_resolved
     full_path = path if path.startswith("http") else f"{base}{path}"
     headers = _build_suz_auth_headers(token, with_json_content_type=False)
     full_url = f"{full_path}?{urlencode(params)}"
-
     response, last_err = await _suz_dispatch_httpx(
         method="GET",
         url=full_path,
         headers=headers,
         params=params,
     )
-
     if response is None and settings.suz_curl_fallback:
         tmax = max(1, int(settings.suz_timeout_seconds))
         for curl_tls in _curl_tls_flag_variants():
@@ -1110,13 +920,11 @@ async def _suz_get_json(
             except OSError as exc:
                 last_err = exc
                 continue
-
     if response is None:
         raise SuzIntegrationError(
             f"Не удалось выполнить GET к СУЗ: {last_err}",
             suggest_transport_diagnostics=True,
         ) from last_err
-
     if response.status_code != 200:
         raise SuzIntegrationError(
             _format_suz_http_error_detail(
@@ -1125,24 +933,19 @@ async def _suz_get_json(
                 body_text=response.text,
             )
         )
-
     try:
         payload = response.json()
     except ValueError as exc:
         raise SuzIntegrationError(f"СУЗ вернула не-JSON: {response.text[:500]}") from exc
-
     if not isinstance(payload, (dict, list)):
         raise SuzIntegrationError(f"СУЗ вернула неожиданный JSON: {str(payload)[:500]}")
     return payload
-
-
 async def fetch_suz_order_status(
     *,
     order_id: str,
     oms_id: str | None = None,
     token_override: str | None = None,
 ) -> dict[str, Any]:
-    """GET /api/v3/order/{orderId}/status?omsId=..."""
     _, _, oms_resolved = _resolve_suz_connection_with_token(oms_id, token_override)
     path = f"/api/v3/order/{order_id.strip()}/status"
     payload = await _suz_get_json(
@@ -1152,8 +955,6 @@ async def fetch_suz_order_status(
         token_override=token_override,
     )
     return payload if isinstance(payload, dict) else {"data": payload}
-
-
 async def fetch_suz_order_codes(
     *,
     order_id: str,
@@ -1163,7 +964,6 @@ async def fetch_suz_order_codes(
     last_block_id: int = 0,
     token_override: str | None = None,
 ) -> list[str]:
-    """GET /api/v3/codes?omsId=...&orderId=...&gtin=...&quantity=...&lastBlockId=..."""
     _, _, oms_resolved = _resolve_suz_connection_with_token(oms_id, token_override)
     gtin14 = _normalize_gtin(gtin)
     if not gtin14:
@@ -1191,13 +991,8 @@ async def fetch_suz_order_codes(
             if isinstance(inner, list):
                 return [str(x).strip() for x in inner if str(x).strip()]
     return []
-
-
 def build_suz_close_order_body(order_id: str) -> dict[str, Any]:
-    """JSON-тело POST /api/v3/order/close?omsId=... (API СУЗ 3.0, раздел 4.4.8)."""
     return {"orderId": order_id.strip()}
-
-
 async def close_suz_order(
     *,
     oms_id: str | None = None,
@@ -1206,23 +1001,14 @@ async def close_suz_order(
     json_body: dict[str, Any] | None = None,
     token_override: str | None = None,
 ) -> dict:
-    """
-    POST /api/v3/order/close?omsId=... — прокси: тело и X-Signature с фронтенда (cadesplugin).
-
-    Тело: {"orderId": "uuid-заказа"}. Требует откреплённую подпись тела в браузере.
-    Не вызывать с бэкенда без подписи — при полном скачивании КМ достаточно локального статуса closed;
-    СУЗ автоматически завершит заказ через 48 ч после получения всех КМ из подзаказа.
-    """
     settings = get_settings()
     base, token, oms_resolved = _resolve_suz_connection_with_token(oms_id, token_override)
-
     sig = (x_signature or "").replace("\r", "").replace("\n", "").strip()
     if not sig:
         raise SuzIntegrationError(
             "Для закрытия заказа в СУЗ v3 нужна откреплённая подпись тела запроса (заголовок X-Signature). "
             "Подпишите JSON в браузере через КриптоПро ЭЦП Browser plug-in."
         )
-
     path = f"{base}/api/v3/order/close"
     params = {"omsId": oms_resolved}
     raw_body = (body_string or "").strip()
@@ -1231,9 +1017,7 @@ async def close_suz_order(
             raise SuzIntegrationError("Пустое тело запроса к СУЗ.")
         raw_body = dumps_suz_request_body(json_body)
     body_bytes = raw_body.encode("utf-8")
-
     headers = _build_suz_auth_headers(token, x_signature=sig)
-
     response, last_err = await _suz_dispatch_httpx(
         method="POST",
         url=path,
@@ -1241,7 +1025,6 @@ async def close_suz_order(
         params=params,
         content=body_bytes,
     )
-
     full_url_post = f"{path}?{urlencode(params)}"
     if response is None and settings.suz_curl_fallback:
         tmax = max(1, int(settings.suz_timeout_seconds))
@@ -1271,13 +1054,11 @@ async def close_suz_order(
                 last_err = exc
                 lbl = "default TLS" if not curl_tls else " ".join(curl_tls)
                 logger.warning("SUZ curl POST close (%s) failed: %s", lbl, exc)
-
     if response is None:
         raise SuzIntegrationError(
             f"Не удалось выполнить POST закрытия заказа в СУЗ: {last_err}",
             suggest_transport_diagnostics=True,
         ) from last_err
-
     if response.status_code not in (200, 201, 204):
         raise SuzIntegrationError(
             _format_suz_http_error_detail(
@@ -1286,7 +1067,6 @@ async def close_suz_order(
                 body_text=response.text,
             )
         )
-
     if not response.content:
         return {}
     try:
@@ -1294,26 +1074,17 @@ async def close_suz_order(
     except ValueError:
         return {}
     return payload if isinstance(payload, dict) else {}
-
-
 def _resolve_true_api_base_url(settings: Settings | None = None) -> str:
-    """Базовый URL True API ЧЗ (отдельно от OMS API СУЗ)."""
     s = settings or get_settings()
     base_url = (s.suz_api_base_url or "https://suz.sandbox.crptech.ru").strip().rstrip("/")
     true_api_base = base_url.replace("suz.sandbox", "markirovka.sandbox")
     if "sandbox" not in true_api_base:
         true_api_base = "https://markirovka.crpt.ru"
     return true_api_base.rstrip("/")
-
-
 async def check_cis_status(
     cis: str,
     client_token: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Проверить статус кода маркировки через True API ЧЗ.
-    GET /api/v3/true-api/cises/info?cis={cis}
-    """
     settings = get_settings()
     token = _normalize_suz_client_token(
         client_token or resolve_suz_api_token(settings)
@@ -1325,17 +1096,14 @@ async def check_cis_status(
         "Accept": "application/json",
     }
     params = {"cis": cis}
-
     response, err = await _suz_dispatch_httpx(
         method="GET",
         url=url,
         headers=headers,
         params=params,
     )
-
     if response is None:
         return {"error": str(err), "cis": cis, "status": "unknown"}
-
     if response.status_code == 200:
         data = response.json()
         if isinstance(data, list) and data:
@@ -1356,60 +1124,37 @@ async def check_cis_status(
         "status": "error",
         "error": response.text[:200],
     }
-
-
 def _get_short_cis(code: str) -> str:
-    """
-    Получить укороченную версию кода маркировки.
-    Полный: 01{GTIN}21{serial}\x1d91{4}\x1d92{44}=
-    Укороченный: 01{GTIN}21{serial} (до первого \x1d)
-    """
     gs = "\x1d"
     if gs in code:
         return code.split(gs)[0]
-    # Если нет \x1d — попробовать найти "91FFD0" и обрезать
     idx = code.find("91FFD0")
     if idx > 0:
         return code[:idx]
     return code
-
-
 async def check_cis_statuses_batch(
     cises: list[str],
     db: AsyncSession | None = None,
     *args,
     **kwargs,
 ) -> list[dict[str, Any]]:
-    """
-    POST /api/v3/true-api/cises/info
-    Body: ["код1", "код2", ...]
-    Header: Authorization: Bearer {jwt_token}
-    """
     import json as json_lib
-
     settings = get_settings()
-
     if db is not None:
         from services.token_service import get_true_api_token
-
         token = await get_true_api_token(db)
     else:
         token = settings.true_api_token
-
     base_url = settings.true_api_base_url or "https://markirovka.sandbox.crptech.ru"
-
     if not token:
         return [{"cis": c, "status": "error", "error": "TRUE_API_TOKEN не настроен"} for c in cises]
-
     url = f"{base_url.rstrip('/')}/api/v3/true-api/cises/info"
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
-    # ensure_ascii=True преобразует \x1d в \u001d — именно этого ждёт True API
     body = json_lib.dumps(cises, ensure_ascii=True)
-
     logger.info(
         "True API request: url=%s, codes_count=%d, first_code_repr=%s",
         url,
@@ -1417,7 +1162,6 @@ async def check_cis_statuses_batch(
         repr(cises[0])[:80] if cises else "",
     )
     logger.info("Body preview: %s", body[:200])
-
     response, err = await _suz_dispatch_httpx(
         method="POST",
         url=url,
@@ -1425,16 +1169,13 @@ async def check_cis_statuses_batch(
         params=None,
         content=body.encode("utf-8"),
     )
-
     if response is None:
         return [{"cis": c, "status": "error", "error": str(err)} for c in cises]
-
     logger.info(
         "True API response: status=%d, body=%s",
         response.status_code,
         response.text[:300],
     )
-
     results: list[dict[str, Any]] = []
     try:
         data = response.json()
@@ -1456,7 +1197,6 @@ async def check_cis_statuses_batch(
                 cis = item.get("cisInfo", {}).get("cis", "") or (cises[i] if i < len(cises) else "")
                 error_msg = item.get("errorMessage")
                 error_code = item.get("errorCode")
-
                 if str(error_code) == "404" or error_msg == "КМ/КИ не найден":
                     status = "not_found"
                 elif error_msg:
@@ -1464,7 +1204,6 @@ async def check_cis_statuses_batch(
                 else:
                     cis_info = item.get("cisInfo", {})
                     status = cis_info.get("status", "unknown")
-
                 results.append({
                     "cis": cis,
                     "status": status,
@@ -1527,7 +1266,6 @@ async def check_cis_statuses_batch(
                             except Exception:
                                 pass
                 return results
-
         if response.status_code != 200:
             err_text = response.text[:300]
             if isinstance(data, dict):
@@ -1540,5 +1278,4 @@ async def check_cis_statuses_batch(
             return [{"cis": c, "status": "error", "error": err_text} for c in cises]
     except Exception as e:
         return [{"cis": c, "status": "error", "error": str(e)} for c in cises]
-
     return results

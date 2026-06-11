@@ -1,9 +1,3 @@
-/**
- * После `vite build` добавляет `dist/_redirects` с прокси /api → бэкенд (Netlify rewrite 200).
- * Переменная: BACKEND_PROXY_TARGET или NETLIFY_BACKEND_ORIGIN (origin без хвостового /).
- * Если задан абсолютный VITE_API_BASE_URL — редирект не пишем (запросы идут напрямую на API).
- */
-
 import { writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";

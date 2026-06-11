@@ -11,7 +11,6 @@ import {
   type UserCertificate,
 } from "../services/cryptoPro";
 
-/** Значения как в backend/schemas.py: EdoType */
 type EdoTypeApi = "edo_lite" | "commercial_edo";
 
 type CreateUpdResponse = {
@@ -103,7 +102,7 @@ export default function UpdPage() {
       const res = await apiClient.get<UpdListItem[]>("/upd/list");
       setUpds(res.data);
     } catch {
-      // список не критичен для формы
+
     }
   }
 

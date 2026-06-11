@@ -557,7 +557,7 @@ export default function CardsPage() {
           const parsed = JSON.parse(text) as unknown;
           if (Array.isArray(parsed)) return parsed.map(String);
         } catch {
-          /* fall through */
+
         }
       }
       return text.split(";").map((s) => s.trim()).filter(Boolean);
@@ -621,7 +621,7 @@ export default function CardsPage() {
       if (!preserveCatId) {
         const resolved = res.data.resolved_cat_id;
         if (catId) {
-          // keep user selection
+
         } else if (resolved) {
           setForm((f) => ({ ...f, cat_id: String(resolved) }));
         } else if (categories.length === 1) {
@@ -1640,7 +1640,7 @@ export default function CardsPage() {
           </div>
 
           <div className="flex flex-1 overflow-hidden">
-            {/* Левая панель — форма */}
+            {}
             <div className="flex w-96 flex-shrink-0 flex-col overflow-hidden border-r border-forest-100 bg-white">
               <div className="flex border-b border-forest-100">
                 <button
@@ -1889,7 +1889,7 @@ export default function CardsPage() {
               </div>
             </div>
 
-            {/* Правая панель — таблица строк */}
+            {}
             <div className="flex flex-1 flex-col overflow-hidden">
               <div className="flex items-center justify-between border-b border-slate-200 bg-white px-3 py-2">
                 <button

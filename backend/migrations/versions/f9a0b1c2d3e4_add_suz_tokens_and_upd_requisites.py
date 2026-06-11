@@ -1,21 +1,10 @@
-"""Add suz_tokens table and UPD seller/buyer requisites.
-
-Revision ID: f9a0b1c2d3e4
-Revises: e8f9a0b2c3d4
-Create Date: 2026-06-07 12:00:00.000000
-"""
-
 from typing import Sequence, Union
-
 import sqlalchemy as sa
 from alembic import op
-
 revision: str = "f9a0b1c2d3e4"
 down_revision: Union[str, Sequence[str], None] = "e8f9a0b2c3d4"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
-
-
 def upgrade() -> None:
     op.create_table(
         "suz_tokens",
@@ -49,8 +38,6 @@ def upgrade() -> None:
     op.add_column(
         "document_upds", sa.Column("buyer_address", sa.String(length=512), nullable=True)
     )
-
-
 def downgrade() -> None:
     op.drop_column("document_upds", "buyer_address")
     op.drop_column("document_upds", "buyer_name")

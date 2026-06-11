@@ -19,9 +19,6 @@ export type SuzCreateOrderResult = {
   };
 };
 
-/**
- * Вариант A: подпись на фронте (cadesplugin) → прокси на backend → СУЗ.
- */
 export async function createSuzOrderViaProxy(
   orderBody: SuzOrderBody,
   options: { localOrderId?: string; certIndex?: number; thumbprint?: string } = {},

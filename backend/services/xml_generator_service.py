@@ -1,60 +1,38 @@
-"""Генерация XML-черновика УПД (базовая структура 820@)."""
-
 from __future__ import annotations
-
 from functools import lru_cache
 from pathlib import Path
 from uuid import UUID
-
 from lxml import etree
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from models import DocumentUPD
-
-
 def _text(value: object | None) -> str:
-    """Безопасно приводит значение к строке для XML-атрибутов."""
     if value is None:
         return ""
     return str(value)
-
-
 @lru_cache
 def _get_upd_xsd_schema() -> etree.XMLSchema:
     xsd_path = Path(__file__).resolve().parents[1] / "xsd" / "upd_820.xsd"
     with xsd_path.open("rb") as schema_file:
         parsed_schema = etree.parse(schema_file)
     return etree.XMLSchema(parsed_schema)
-
-
 def validate_upd_xml(xml_bytes: bytes) -> None:
-    """Валидирует XML по XSD-схеме 820@."""
     xml_document = etree.fromstring(xml_bytes)
     schema = _get_upd_xsd_schema()
     if not schema.validate(xml_document):
         errors = "; ".join(error.message for error in schema.error_log)
         raise ValueError(f"UPD XML does not match XSD schema: {errors}")
-
-
 async def generate_upd_xml(document_id: UUID, db: AsyncSession) -> bytes:
-    """
-    Формирует XML черновика УПД по документу из БД.
-
-    Возвращает XML в байтах (UTF-8).
-    """
     result = await db.execute(select(DocumentUPD).where(DocumentUPD.id == document_id))
     document = result.scalar_one_or_none()
     if document is None:
         raise LookupError("UPD document not found")
-
     root = etree.Element(
         "Файл",
         ИдФайл=f"ON_UPD_{document.id}",
         ВерсФорм="5.03",
-        ВерсПрог="markznak-clone",
+        ВерсПрог="g-code-clone",
     )
-
     doc_node = etree.SubElement(
         root,
         "Документ",
@@ -63,14 +41,12 @@ async def generate_upd_xml(document_id: UUID, db: AsyncSession) -> bytes:
         НомерДок=_text(document.document_number),
         ДатаДок=document.created_at.date().isoformat(),
     )
-
     sf_node = etree.SubElement(
         doc_node,
         "СвСчФакт",
         НомерСчФ=_text(document.document_number),
         ДатаСчФ=document.created_at.date().isoformat(),
     )
-
     if any([document.seller_inn, document.seller_name]):
         seller_node = etree.SubElement(sf_node, "СвПрод")
         seller_id = etree.SubElement(seller_node, "ИдСв")
@@ -88,7 +64,6 @@ async def generate_upd_xml(document_id: UUID, db: AsyncSession) -> bytes:
                 "АдрТекст",
                 attrib={"АдрТекст": _text(document.seller_address)},
             )
-
     if any([document.buyer_inn, document.buyer_name]):
         buyer_node = etree.SubElement(sf_node, "СвПокуп")
         buyer_id = etree.SubElement(buyer_node, "ИдСв")
@@ -106,7 +81,6 @@ async def generate_upd_xml(document_id: UUID, db: AsyncSession) -> bytes:
                 "АдрТекст",
                 attrib={"АдрТекст": _text(document.buyer_address)},
             )
-
     table_node = etree.SubElement(doc_node, "ТаблСчФакт")
     for idx, code in enumerate(document.marking_codes, start=1):
         etree.SubElement(
@@ -116,7 +90,6 @@ async def generate_upd_xml(document_id: UUID, db: AsyncSession) -> bytes:
             НаимТов="Маркированный товар",
             КодМаркировки=_text(code),
         )
-
     xml_bytes = etree.tostring(
         root,
         xml_declaration=True,

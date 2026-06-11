@@ -1,5 +1,3 @@
-"""Эндпоинты ввода КМ в оборот."""
-
 import json
 from uuid import UUID
 
@@ -7,7 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db_session
-from models import UtilisationReport
+from dependencies import get_current_org, get_current_user
+from models import Organization, User, UtilisationReport
 from schemas import (
     UtilisationBodyPreview,
     UtilisationReportCreate,
@@ -26,27 +25,34 @@ router = APIRouter(prefix="/utilisation", tags=["utilisation"])
 )
 async def create_report(
     data: UtilisationReportCreate,
+    _: User = Depends(get_current_user),
+    org: Organization | None = Depends(get_current_org),
     db: AsyncSession = Depends(get_db_session),
 ) -> UtilisationReportResponse:
-    """Создать черновик отчёта о нанесении."""
     if not data.marking_codes:
         raise HTTPException(status_code=400, detail="Список кодов не может быть пустым")
     if len(data.marking_codes) > 5000:
         raise HTTPException(status_code=400, detail="Максимум 5000 кодов в одном отчёте")
-    return await utilisation_service.create_utilisation_draft(data, db)
+    return await utilisation_service.create_utilisation_draft(
+        data, db, org_id=org.id if org else None
+    )
 
 
 @router.get("/", response_model=list[UtilisationReportResponse])
 async def list_reports(
+    _: User = Depends(get_current_user),
+    org: Organization | None = Depends(get_current_org),
     db: AsyncSession = Depends(get_db_session),
 ) -> list[UtilisationReportResponse]:
-    """Список отчётов о нанесении."""
-    return await utilisation_service.list_utilisation_reports(db)
+    return await utilisation_service.list_utilisation_reports(
+        db, org_id=org.id if org else None
+    )
 
 
 @router.delete("/{report_id}", status_code=204)
 async def delete_report(
     report_id: UUID,
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> None:
     report = await db.get(UtilisationReport, report_id)
@@ -59,9 +65,9 @@ async def delete_report(
 @router.get("/{report_id}/body", response_model=UtilisationBodyPreview)
 async def get_body_for_signing(
     report_id: UUID,
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> UtilisationBodyPreview:
-    """Получить тело запроса для подписи на фронте (cadesplugin)."""
     try:
         _report, body_str = await utilisation_service.get_utilisation_body_for_signing(
             report_id, db
@@ -78,9 +84,9 @@ async def get_body_for_signing(
 async def send_report(
     report_id: UUID,
     payload: UtilisationSendRequest,
+    _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> UtilisationReportResponse:
-    """Отправить отчёт в СУЗ (подпись делается на фронте через cadesplugin)."""
     try:
         return await utilisation_service.send_utilisation_report(
             report_id, payload.signature, db

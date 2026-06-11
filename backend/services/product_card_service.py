@@ -1,19 +1,14 @@
-"""Бизнес-логика и CRUD-операции для карточек товаров Национального каталога."""
-
 from __future__ import annotations
-
 import csv
 import io
 import json
 import logging
 import random
 from uuid import UUID
-
 import openpyxl
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from models import ProductCard, ProductCardStatus, ProductCardType
 from schemas import ProductCardCreate, ProductCardUpdate
 from services.national_catalog_integration_service import (
@@ -21,9 +16,7 @@ from services.national_catalog_integration_service import (
     fetch_feed_status,
     send_product_card,
 )
-
 logger = logging.getLogger(__name__)
-
 _FEED_STATUS_TO_CARD_STATUS: dict[str, ProductCardStatus] = {
     "Signed": ProductCardStatus.PUBLISHED,
     "Moderated": ProductCardStatus.SENT,
@@ -31,7 +24,6 @@ _FEED_STATUS_TO_CARD_STATUS: dict[str, ProductCardStatus] = {
     "Received": ProductCardStatus.SENT,
     "Rejected": ProductCardStatus.DRAFT,
 }
-
 _CARD_STRING_FIELDS = (
     "brand",
     "color",
@@ -47,15 +39,11 @@ _CARD_STRING_FIELDS = (
     "model_article_type",
     "model_article",
 )
-
-
 def _optional_str(value: str | None) -> str | None:
     if value is None:
         return None
     stripped = value.strip()
     return stripped or None
-
-
 def _attrs_from_create(data: ProductCardCreate) -> dict:
     return {
         "type": data.type,
@@ -80,8 +68,6 @@ def _attrs_from_create(data: ProductCardCreate) -> dict:
         "is_set": data.is_set,
         "extra_attrs": data.extra_attrs,
     }
-
-
 def _copy_card_fields(source: ProductCard) -> dict:
     return {
         "type": source.type,
@@ -106,8 +92,6 @@ def _copy_card_fields(source: ProductCard) -> dict:
         "is_set": source.is_set,
         "extra_attrs": source.extra_attrs,
     }
-
-
 def generate_gtin() -> str:
     prefix = "046"
     body = "".join(str(random.randint(0, 9)) for _ in range(10))
@@ -115,8 +99,6 @@ def generate_gtin() -> str:
     total = sum(int(d) * (1 if i % 2 == 0 else 3) for i, d in enumerate(gtin_no_check))
     check = (10 - (total % 10)) % 10
     return gtin_no_check + str(check)
-
-
 def _resolve_cat_id(data: ProductCardCreate) -> int | None:
     if data.cat_id is not None:
         return data.cat_id
@@ -127,8 +109,6 @@ def _resolve_cat_id(data: ProductCardCreate) -> int | None:
         if isinstance(raw, str) and raw.isdigit():
             return int(raw)
     return None
-
-
 def _resolve_cat_id_for_update(data: ProductCardUpdate, card: ProductCard) -> int | None:
     if hasattr(data, "cat_id") and data.cat_id:
         return data.cat_id
@@ -145,10 +125,7 @@ def _resolve_cat_id_for_update(data: ProductCardUpdate, card: ProductCard) -> in
         if isinstance(raw, str) and raw.isdigit():
             return int(raw)
     return None
-
-
 def _card_nk_snapshot(card: ProductCard) -> dict:
-    """Снимок полей карточки, уходящих в интеграцию с НК."""
     return {
         "id": str(card.id),
         "type": card.type.value if hasattr(card.type, "value") else card.type,
@@ -172,18 +149,19 @@ def _card_nk_snapshot(card: ProductCard) -> dict:
         "is_set": card.is_set,
         "extra_attrs": card.extra_attrs,
     }
-
-
-async def create_card(data: ProductCardCreate, db: AsyncSession) -> ProductCard:
+async def create_card(
+    data: ProductCardCreate,
+    db: AsyncSession,
+    org_id: UUID | None = None,
+) -> ProductCard:
     cat_id = _resolve_cat_id(data)
     logger.info(
         "create_card: входные данные: %s, cat_id=%s",
         json.dumps(data.model_dump(), ensure_ascii=False, default=str),
         cat_id,
     )
-
     try:
-        card = ProductCard(**_attrs_from_create(data))
+        card = ProductCard(**_attrs_from_create(data), org_id=org_id)
         db.add(card)
         await db.commit()
         await db.refresh(card)
@@ -194,7 +172,6 @@ async def create_card(data: ProductCardCreate, db: AsyncSession) -> ProductCard:
     except Exception:
         logger.exception("create_card: ошибка при локальном сохранении карточки")
         raise
-
     try:
         logger.info(
             "create_card: отправка в НК — card_id=%s, cat_id=%s, payload=%s",
@@ -236,7 +213,6 @@ async def create_card(data: ProductCardCreate, db: AsyncSession) -> ProductCard:
             card.id,
         )
         raise
-
     try:
         card.national_catalog_feed_id = submission_result.feed_id
         card.national_catalog_feed_status = submission_result.feed_status
@@ -260,10 +236,7 @@ async def create_card(data: ProductCardCreate, db: AsyncSession) -> ProductCard:
             card.id,
         )
         raise
-
     return card
-
-
 async def update_card(
     card_id: UUID,
     data: ProductCardUpdate,
@@ -272,7 +245,6 @@ async def update_card(
     card = await db.get(ProductCard, card_id)
     if card is None:
         return None
-
     for field, value in data.model_dump(exclude_none=True).items():
         if field in _CARD_STRING_FIELDS and isinstance(value, str):
             value = _optional_str(value)
@@ -283,10 +255,8 @@ async def update_card(
         if field == "gtin" and isinstance(value, str):
             value = _optional_str(value)
         setattr(card, field, value)
-
     await db.commit()
     await db.refresh(card)
-
     if card.status in (ProductCardStatus.SENT, ProductCardStatus.PUBLISHED):
         try:
             cat_id = _resolve_cat_id_for_update(data, card)
@@ -298,15 +268,10 @@ async def update_card(
             await db.refresh(card)
         except NationalCatalogIntegrationError:
             pass
-
     return card
-
-
 async def get_cards(db: AsyncSession, gtin: str | None = None) -> list[ProductCard]:
     items, _ = await list_cards(db, gtin=gtin, limit=10_000, offset=0)
     return items
-
-
 async def list_cards(
     db: AsyncSession,
     *,
@@ -314,28 +279,25 @@ async def list_cards(
     status: str | None = None,
     limit: int = 500,
     offset: int = 0,
+    org_id: UUID | None = None,
 ) -> tuple[list[ProductCard], int]:
     filters = []
+    if org_id:
+        filters.append(ProductCard.org_id == org_id)
     if gtin:
         filters.append(ProductCard.gtin == gtin.strip())
     if status and status != "all":
         filters.append(ProductCard.status == status)
-
     count_query = select(func.count()).select_from(ProductCard)
     query = select(ProductCard).order_by(ProductCard.created_at.desc())
     for clause in filters:
         count_query = count_query.where(clause)
         query = query.where(clause)
-
     total = int(await db.scalar(count_query) or 0)
     result = await db.scalars(query.limit(limit).offset(offset))
     return list(result.all()), total
-
-
 async def get_card(card_id: UUID, db: AsyncSession) -> ProductCard | None:
     return await db.get(ProductCard, card_id)
-
-
 async def delete_card(card_id: UUID, db: AsyncSession) -> bool:
     card = await db.get(ProductCard, card_id)
     if card is None:
@@ -343,8 +305,6 @@ async def delete_card(card_id: UUID, db: AsyncSession) -> bool:
     await db.delete(card)
     await db.commit()
     return True
-
-
 async def bulk_delete_cards(card_ids: list[UUID], db: AsyncSession) -> int:
     deleted = 0
     for card_id in card_ids:
@@ -354,11 +314,8 @@ async def bulk_delete_cards(card_ids: list[UUID], db: AsyncSession) -> int:
             deleted += 1
     await db.commit()
     return deleted
-
-
 def _parse_import_rows(filename: str, content: bytes) -> list[dict[str, object]]:
     cards_data: list[dict[str, object]] = []
-
     if filename.lower().endswith(".xlsx"):
         wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True)
         ws = wb.active
@@ -372,7 +329,6 @@ def _parse_import_rows(filename: str, content: bytes) -> list[dict[str, object]]
             cards_data.append(dict(zip(headers, row)))
         wb.close()
         return cards_data
-
     if filename.lower().endswith(".csv"):
         text = content.decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(text))
@@ -381,10 +337,7 @@ def _parse_import_rows(filename: str, content: bytes) -> list[dict[str, object]]
             if any(normalized.values()):
                 cards_data.append(normalized)
         return cards_data
-
     return cards_data
-
-
 async def import_cards_from_file(
     filename: str,
     content: bytes,
@@ -395,18 +348,15 @@ async def import_cards_from_file(
     skipped = 0
     sent_to_nk = 0
     errors: list[str] = []
-
     for row in cards_data:
         try:
             name = str(row.get("name") or row.get("наименование") or "").strip()
             tn_ved = str(row.get("tn_ved") or row.get("тнвэд") or row.get("tn ved") or "").strip()
             gtin_raw = str(row.get("gtin") or "").strip()
             gtin = gtin_raw or None
-
             if not name or not tn_ved:
                 skipped += 1
                 continue
-
             card = ProductCard(
                 type=ProductCardType.TECH_CARD,
                 tn_ved=tn_ved,
@@ -420,7 +370,6 @@ async def import_cards_from_file(
             )
             db.add(card)
             await db.flush()
-
             try:
                 result = await send_product_card(card, None)
                 card.national_catalog_feed_id = result.feed_id
@@ -430,12 +379,10 @@ async def import_cards_from_file(
                 sent_to_nk += 1
             except NationalCatalogIntegrationError:
                 pass
-
             created += 1
         except Exception as exc:
             errors.append(str(exc))
             skipped += 1
-
     await db.commit()
     return {
         "created": created,
@@ -443,13 +390,10 @@ async def import_cards_from_file(
         "skipped": skipped,
         "errors": errors[:10],
     }
-
-
 async def create_similar_card(card_id: UUID, db: AsyncSession) -> ProductCard | None:
     source_card = await db.get(ProductCard, card_id)
     if source_card is None:
         return None
-
     copied_card = ProductCard(
         **_copy_card_fields(source_card),
         name=f"(Копия) {source_card.name}",
@@ -458,8 +402,6 @@ async def create_similar_card(card_id: UUID, db: AsyncSession) -> ProductCard | 
     await db.commit()
     await db.refresh(copied_card)
     return copied_card
-
-
 async def sync_card_feed_status(card_id: UUID, db: AsyncSession) -> ProductCard:
     card = await db.get(ProductCard, card_id)
     if card is None:
@@ -469,9 +411,7 @@ async def sync_card_feed_status(card_id: UUID, db: AsyncSession) -> ProductCard:
             status.HTTP_400_BAD_REQUEST,
             detail="Для карточки отсутствует feed_id. Сначала отправьте карточку в Национальный каталог.",
         )
-
     from settings import get_settings
-
     settings = get_settings()
     headers: dict[str, str] = {"Content-Type": "application/json; charset=utf-8"}
     auth_params: dict[str, str] = {}
@@ -484,7 +424,6 @@ async def sync_card_feed_status(card_id: UUID, db: AsyncSession) -> ProductCard:
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Не настроена авторизация НК (NATIONAL_CATALOG_API_KEY/NATIONAL_CATALOG_AUTH_TOKEN).",
         )
-
     feed_status, feed_payload = await fetch_feed_status(
         feed_id=card.national_catalog_feed_id,
         settings_send_url=settings.national_catalog_send_url,

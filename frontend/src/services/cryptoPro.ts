@@ -123,4 +123,3 @@ export async function signData(
     throw new Error(extractReadableCryptoError(error));
   }
 }
-

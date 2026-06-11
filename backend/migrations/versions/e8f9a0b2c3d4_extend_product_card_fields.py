@@ -1,22 +1,10 @@
-"""Extend product card fields for National Catalog clone.
-
-Revision ID: e8f9a0b2c3d4
-Revises: d7e8f9a0b1c2
-Create Date: 2026-06-03 12:00:00.000000
-"""
-
 from typing import Sequence, Union
-
 from alembic import op
 import sqlalchemy as sa
-
-
 revision: str = "e8f9a0b2c3d4"
 down_revision: Union[str, Sequence[str], None] = "d7e8f9a0b1c2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
-
-
 def upgrade() -> None:
     op.add_column("product_cards", sa.Column("brand", sa.String(length=256), nullable=True))
     op.add_column("product_cards", sa.Column("color", sa.String(length=128), nullable=True))
@@ -42,8 +30,6 @@ def upgrade() -> None:
     op.add_column("product_cards", sa.Column("extra_attrs", sa.JSON(), nullable=True))
     op.alter_column("product_cards", "custom_name", server_default=None)
     op.alter_column("product_cards", "is_set", server_default=None)
-
-
 def downgrade() -> None:
     op.drop_column("product_cards", "extra_attrs")
     op.drop_column("product_cards", "is_set")

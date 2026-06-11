@@ -1,49 +1,32 @@
-"""Интеграция отправки карточек в Национальный каталог ЧЗ."""
-
 from __future__ import annotations
-
 import asyncio
 import json
 import logging
 from dataclasses import dataclass
 from typing import Any
-
 import httpx
-
 from models import ProductCard, ProductCardType
 from settings import get_settings
-
 logger = logging.getLogger(__name__)
-
-
 class NationalCatalogIntegrationError(RuntimeError):
-    """Ошибка отправки карточки во внешний контур Национального каталога."""
-
-
+    pass
 @dataclass
 class NationalCatalogSubmissionResult:
     remote_status: str
     feed_id: str | None
     feed_status: str | None
     feed_payload: dict[str, Any] | None
-
-
 def _serialize_response(response: httpx.Response) -> dict[str, Any]:
     try:
         payload = response.json()
         return payload if isinstance(payload, dict) else {"payload": payload}
     except ValueError:
         return {"raw_text": response.text, "headers": dict(response.headers)}
-
-
 def _extract_base_url(send_url: str) -> str:
     marker = "/v3/"
     idx = send_url.find(marker)
     return send_url[:idx] if idx > 0 else send_url.rstrip("/")
-
-
 def _active_cat_ids_from_categories(categories: list[dict[str, Any]]) -> list[int]:
-    """Идентификаторы активных категорий НК из ответа /v3/categories (порядок сохраняем)."""
     seen: set[int] = set()
     out: list[int] = []
     for c in categories:
@@ -61,8 +44,6 @@ def _active_cat_ids_from_categories(categories: list[dict[str, Any]]) -> list[in
             seen.add(cid)
             out.append(cid)
     return out
-
-
 async def _fetch_required_attrs(
     client: httpx.AsyncClient,
     send_url: str,
@@ -72,11 +53,6 @@ async def _fetch_required_attrs(
     cat_id: int | None,
     active_cat_ids: list[int],
 ) -> tuple[list[dict[str, Any]], int | None]:
-    """
-    Возвращает обязательные атрибуты и cat_id, с которым сработал запрос (если был).
-
-    В sandbox НК запрос /v3/attributes по tnved часто отвечает 404; по cat_id из /v3/categories — 200.
-    """
     base_url = f"{_extract_base_url(send_url)}/v3/attributes"
     attempts: list[dict[str, Any]] = []
     if cat_id:
@@ -85,7 +61,6 @@ async def _fetch_required_attrs(
         for cid in active_cat_ids:
             attempts.append({"attr_type": "m", "cat_id": cid})
     attempts.append({"attr_type": "m", "tnved": tnved})
-
     errors: list[str] = []
     for query in attempts:
         response = await client.get(base_url, params={**auth_params, **query}, headers=headers)
@@ -95,7 +70,6 @@ async def _fetch_required_attrs(
                 f"[status={response.status_code}, url={response.request.url}]: {_serialize_response(response)}"
             )
             continue
-
         payload = _serialize_response(response)
         result = payload.get("result")
         if isinstance(result, list):
@@ -110,11 +84,8 @@ async def _fetch_required_attrs(
             "НК вернул неожиданный формат ответа по атрибутам "
             f"[url={response.request.url}]: {payload}"
         )
-
     details = " | ".join(errors) if errors else "Не удалось получить обязательные атрибуты НК"
     raise NationalCatalogIntegrationError(details)
-
-
 async def _fetch_optional_attrs(
     client: httpx.AsyncClient,
     send_url: str,
@@ -124,11 +95,6 @@ async def _fetch_optional_attrs(
     cat_id: int | None,
     active_cat_ids: list[int],
 ) -> list[dict[str, Any]]:
-    """
-    Возвращает необязательные атрибуты НК.
-
-    В боевом контуре — attr_type=o, в sandbox — attr_type=r (recommended).
-    """
     base_url = f"{_extract_base_url(send_url)}/v3/attributes"
     cat_attempts: list[int | None] = []
     if cat_id:
@@ -136,7 +102,6 @@ async def _fetch_optional_attrs(
     else:
         cat_attempts.extend(active_cat_ids)
     cat_attempts.append(None)
-
     for attr_type in ("o", "r"):
         for cid in cat_attempts:
             query: dict[str, Any] = {"attr_type": attr_type}
@@ -144,19 +109,14 @@ async def _fetch_optional_attrs(
                 query["cat_id"] = cid
             else:
                 query["tnved"] = tnved
-
             response = await client.get(base_url, params={**auth_params, **query}, headers=headers)
             if response.status_code != 200:
                 continue
-
             payload = _serialize_response(response)
             result = payload.get("result")
             if isinstance(result, list) and result:
                 return result
-
     return []
-
-
 async def _fetch_categories_by_tnved(
     client: httpx.AsyncClient,
     send_url: str,
@@ -167,7 +127,6 @@ async def _fetch_categories_by_tnved(
     tnved_candidates = [tnved]
     if len(tnved) >= 4 and tnved[:4] != tnved:
         tnved_candidates.append(tnved[:4])
-
     last_error: str | None = None
     for candidate in tnved_candidates:
         response = await client.get(
@@ -186,16 +145,12 @@ async def _fetch_categories_by_tnved(
         if isinstance(result, list):
             return result
         last_error = f"НК вернул неожиданный формат categories для tnved={candidate}: {payload}"
-
     raise NationalCatalogIntegrationError(last_error or "Не удалось получить категории НК по ТН ВЭД")
-
-
 def _validate_category_access(categories: list[dict[str, Any]], tnved: str, cat_id: int | None) -> None:
     if not categories:
         raise NationalCatalogIntegrationError(
             f"По ТН ВЭД {tnved} не найдено категорий НК для текущего участника."
         )
-
     active_categories = [
         c for c in categories if isinstance(c, dict) and (c.get("category_active") is True)
     ]
@@ -204,7 +159,6 @@ def _validate_category_access(categories: list[dict[str, Any]], tnved: str, cat_
             "Для данного ТН ВЭД в НК нет активных категорий для текущего участника. "
             "Проверьте подключенные товарные группы в Едином ЛК ГИС МТ."
         )
-
     if cat_id is None:
         return
     if not any(isinstance(c, dict) and c.get("cat_id") == cat_id for c in active_categories):
@@ -213,8 +167,6 @@ def _validate_category_access(categories: list[dict[str, Any]], tnved: str, cat_
             f"Категория {cat_id} недоступна для ТН ВЭД {tnved} у текущего участника. "
             f"Доступные категории: {available}"
         )
-
-
 def _resolve_remote_status(payload: dict[str, Any]) -> str:
     result = payload.get("result")
     if isinstance(result, dict) and result.get("feed_id"):
@@ -223,8 +175,6 @@ def _resolve_remote_status(payload: dict[str, Any]) -> str:
     if raw_status in {"published", "sent"}:
         return raw_status
     return "sent"
-
-
 def _extract_feed_id(payload: dict[str, Any]) -> str | None:
     result = payload.get("result")
     if isinstance(result, dict):
@@ -232,8 +182,6 @@ def _extract_feed_id(payload: dict[str, Any]) -> str | None:
         if feed_id is not None:
             return str(feed_id)
     return None
-
-
 def _pick_attr_value_type(attr: dict[str, Any], fallback: str = "") -> str:
     value_types = attr.get("attr_value_type")
     if isinstance(value_types, list):
@@ -241,8 +189,6 @@ def _pick_attr_value_type(attr: dict[str, Any], fallback: str = "") -> str:
             if isinstance(item, str) and item.strip() and item.strip() != "---":
                 return item.strip()
     return fallback
-
-
 def _parse_nk_attr_values(raw: Any) -> dict[int, str]:
     if not isinstance(raw, dict):
         return {}
@@ -257,22 +203,14 @@ def _parse_nk_attr_values(raw: Any) -> dict[int, str]:
         if text:
             out[int(key)] = text
     return out
-
-
 def _user_nk_attrs(card: ProductCard) -> dict[int, str]:
-    """Значения обязательных атрибутов НК, заполненные пользователем в форме."""
     if not card.extra_attrs or not isinstance(card.extra_attrs, dict):
         return {}
     return _parse_nk_attr_values(card.extra_attrs.get("nk_attrs"))
-
-
 def _user_nk_optional_attrs(card: ProductCard) -> dict[int, str]:
-    """Значения необязательных атрибутов НК, заполненные пользователем в форме."""
     if not card.extra_attrs or not isinstance(card.extra_attrs, dict):
         return {}
     return _parse_nk_attr_values(card.extra_attrs.get("nk_optional_attrs"))
-
-
 def _append_user_attr(
     attrs: list[dict[str, Any]],
     attr: dict[str, Any],
@@ -284,13 +222,10 @@ def _append_user_attr(
     if value_type:
         entry["attr_value_type"] = value_type
     attrs.append(entry)
-
-
 def _build_required_attrs(card: ProductCard, required_attrs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[int]]:
     attrs: list[dict[str, Any]] = []
     unresolved: list[int] = []
     user_attrs = _user_nk_attrs(card)
-
     for attr in required_attrs:
         if not isinstance(attr, dict):
             continue
@@ -299,26 +234,24 @@ def _build_required_attrs(card: ProductCard, required_attrs: list[dict[str, Any]
             continue
         attr_id = int(raw_id)
         presets = attr.get("attr_preset") if isinstance(attr.get("attr_preset"), list) else []
-
         if attr_id in user_attrs:
             _append_user_attr(attrs, attr, attr_id, user_attrs[attr_id])
             continue
-
-        if attr_id == 2478:  # Полное наименование товара
+        if attr_id == 2478:  
             attrs.append({"attr_id": attr_id, "attr_value": card.name})
-        elif attr_id == 2504:  # Товарный знак
+        elif attr_id == 2504:  
             brand_value = (card.brand or "").strip() or "NO_BRAND"
             attrs.append({"attr_id": attr_id, "attr_value": brand_value})
-        elif attr_id == 3959:  # Группа ТНВЭД
+        elif attr_id == 3959:  
             attrs.append({"attr_id": attr_id, "attr_value": card.tn_ved[:4]})
-        elif attr_id == 13933:  # Код ТНВЭД (10 знаков, лучше из пресета)
+        elif attr_id == 13933:  
             preset_tnved = next((p for p in presets if isinstance(p, str) and p.isdigit() and len(p) == 10), "")
             value = preset_tnved or (card.tn_ved if len(card.tn_ved) == 10 else "")
             if value:
                 attrs.append({"attr_id": attr_id, "attr_value": value})
             else:
                 unresolved.append(attr_id)
-        elif attr_id == 2716:  # Заявленный объем
+        elif attr_id == 2716:  
             attrs.append(
                 {
                     "attr_id": attr_id,
@@ -326,40 +259,37 @@ def _build_required_attrs(card: ProductCard, required_attrs: list[dict[str, Any]
                     "attr_value_type": _pick_attr_value_type(attr, "мл"),
                 }
             )
-        elif attr_id == 1034:  # Тип парфюмерии
+        elif attr_id == 1034:  
             value = "ДУХИ" if "ДУХИ" in presets else (presets[0] if presets else "")
             if value:
                 attrs.append({"attr_id": attr_id, "attr_value": value})
             else:
                 unresolved.append(attr_id)
-        elif attr_id == 2710:  # Тип упаковки
+        elif attr_id == 2710:  
             preferred = "ФЛАКОН"
             value = preferred if preferred in presets else (presets[0] if presets else "")
             if value:
                 attrs.append({"attr_id": attr_id, "attr_value": value})
             else:
                 unresolved.append(attr_id)
-        elif attr_id == 2713:  # Материал упаковки
+        elif attr_id == 2713:  
             preferred = "СТЕКЛО"
             value = preferred if preferred in presets else (presets[0] if presets else "")
             if value:
                 attrs.append({"attr_id": attr_id, "attr_value": value})
             else:
                 unresolved.append(attr_id)
-        elif attr_id == 13836:  # Номер технического регламента
+        elif attr_id == 13836:  
             value = presets[0] if presets else ""
             if value:
                 attrs.append({"attr_id": attr_id, "attr_value": value})
             else:
                 unresolved.append(attr_id)
-        elif attr_id == 2630:  # Страна производства
+        elif attr_id == 2630:  
             attrs.append({"attr_id": attr_id, "attr_value": "RU"})
         else:
             unresolved.append(attr_id)
-
     return attrs, sorted(set(unresolved))
-
-
 def _build_entry_variants(
     card: ProductCard,
     cat_id: int | None,
@@ -370,7 +300,6 @@ def _build_entry_variants(
     for attr_id, value in _user_nk_optional_attrs(card).items():
         if attr_id not in built_ids:
             required_built_attrs.append({"attr_id": attr_id, "attr_value": value})
-
     brand_value = (card.brand or "").strip() or "NO_BRAND"
     base_payload: dict[str, Any] = {
         "good_name": card.name,
@@ -378,12 +307,10 @@ def _build_entry_variants(
         "brand": brand_value,
         "good_attrs": required_built_attrs,
     }
-
     variants: list[dict[str, Any]] = []
     gtin = (card.gtin or "").strip()
     card_type = card.type.value if hasattr(card.type, "value") else str(card.type)
     is_tech_card = card_type == ProductCardType.TECH_CARD.value
-
     if gtin and not is_tech_card:
         gtin_payload = {
             **base_payload,
@@ -412,19 +339,13 @@ def _build_entry_variants(
         raise NationalCatalogIntegrationError(
             "Для типа «Единица товара», «Комплект» или «Набор» необходимо указать GTIN."
         )
-
     return variants
-
-
 def _build_request_bodies(entry: dict[str, Any]) -> list[Any]:
-    # НК в разных сценариях принимает feed в разных формах.
     return [
         entry,
         [entry],
         {"entries": [entry]},
     ]
-
-
 async def fetch_feed_status(
     *,
     feed_id: str,
@@ -437,39 +358,29 @@ async def fetch_feed_status(
     params: dict[str, Any] = {**auth_params, "feed_id": feed_id, "verbose": "true"}
     if supplier_key:
         params["supplier_key"] = supplier_key
-
     status_url = f"{_extract_base_url(settings_send_url)}/v3/feed-status"
     async with httpx.AsyncClient(timeout=timeout_seconds) as client:
         response = await client.get(status_url, params=params, headers=headers)
     if response.status_code != 200:
         return None, _serialize_response(response)
-
     payload = _serialize_response(response)
     result = payload.get("result")
     if isinstance(result, dict):
         raw_status = result.get("status")
         return str(raw_status) if raw_status is not None else None, payload
     return None, payload
-
-
 async def send_product_card(card: ProductCard, cat_id: int | None = None) -> NationalCatalogSubmissionResult:
-    """Отправляет карточку товара в Национальный каталог, возвращает итоговый статус."""
     settings = get_settings()
-
     if not settings.national_catalog_send_url:
         raise NationalCatalogIntegrationError(
             "Не настроен URL интеграции Национального каталога (NATIONAL_CATALOG_SEND_URL)"
         )
-
     params: dict[str, str] = {}
     if settings.national_catalog_api_key:
         params["apikey"] = settings.national_catalog_api_key
-
     headers: dict[str, str] = {"Content-Type": "application/json; charset=utf-8"}
-    # Если есть API key, используем только его. Bearer-токен применяем как fallback.
     if not params and settings.national_catalog_auth_token:
         headers["Authorization"] = f"Bearer {settings.national_catalog_auth_token}"
-
     if not params and "Authorization" not in headers:
         raise NationalCatalogIntegrationError(
             "Не задана авторизация НК: укажите NATIONAL_CATALOG_API_KEY или NATIONAL_CATALOG_AUTH_TOKEN"
@@ -477,7 +388,6 @@ async def send_product_card(card: ProductCard, cat_id: int | None = None) -> Nat
     feed_params = dict(params)
     if settings.national_catalog_supplier_key:
         feed_params["supplier_key"] = settings.national_catalog_supplier_key
-
     last_error: Exception | None = None
     response: httpx.Response | None = None
     async with httpx.AsyncClient(timeout=settings.national_catalog_timeout_seconds) as client:
@@ -489,7 +399,6 @@ async def send_product_card(card: ProductCard, cat_id: int | None = None) -> Nat
             tnved=card.tn_ved,
         )
         _validate_category_access(categories, card.tn_ved, cat_id)
-
         active_cat_ids = _active_cat_ids_from_categories(
             [c for c in categories if isinstance(c, dict)]
         )
@@ -510,7 +419,6 @@ async def send_product_card(card: ProductCard, cat_id: int | None = None) -> Nat
                 f"Требуются attr_id={unresolved_required}. "
                 "Добавьте заполнение этих атрибутов в интеграцию."
             )
-
         entry_variants = _build_entry_variants(card, effective_cat_id, required_attrs)
         for attempt in range(1, settings.national_catalog_retry_attempts + 1):
             total_variants = len(entry_variants) * 3
@@ -556,13 +464,10 @@ async def send_product_card(card: ProductCard, cat_id: int | None = None) -> Nat
                     break
             if response is not None and response.status_code in {200, 201, 202}:
                 break
-
             if attempt < settings.national_catalog_retry_attempts:
                 await asyncio.sleep(settings.national_catalog_retry_delay_seconds)
-
     if response is None or response.status_code not in {200, 201, 202}:
         raise NationalCatalogIntegrationError(str(last_error) if last_error else "Не удалось отправить карточку")
-
     response_payload = _serialize_response(response)
     feed_id = _extract_feed_id(response_payload)
     remote_status = _resolve_remote_status(response_payload)
@@ -573,7 +478,6 @@ async def send_product_card(card: ProductCard, cat_id: int | None = None) -> Nat
             feed_status=None,
             feed_payload=response_payload,
         )
-
     feed_status, feed_payload = await fetch_feed_status(
         feed_id=feed_id,
         settings_send_url=settings.national_catalog_send_url,

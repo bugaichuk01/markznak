@@ -1,11 +1,3 @@
-/**
- * Подпись тела запроса СУЗ — только в браузере.
- * Backend не подписывает запросы.
- *
- * Скрипт /cadesplugin_api.js в index.html создаёт window.cadesplugin как Promise
- * (как на песочнице ЦРПТ) — перед использованием обязательно await window.cadesplugin.
- */
-
 import { createDetachedSignature, createHash } from "crypto-pro";
 import {
   checkPluginStatus,
@@ -15,7 +7,6 @@ import {
 
 export type { UserCertificate };
 
-/** После await window.cadesplugin — тот же объект Promise с методами CreateObjectAsync и константами. */
 export type CadesPluginApi = {
   CreateObjectAsync: (name: string) => Promise<CadesAsyncObject>;
   CADESCOM_CONTAINER_STORE: number;
@@ -46,7 +37,7 @@ export type SigningBackend = "cadesplugin" | "crypto-pro";
 
 declare global {
   interface Window {
-    /** Promise до инициализации расширения; после await — готовый API на том же объекте. */
+
     cadesplugin?: Promise<void> & CadesPluginApi;
   }
 }
@@ -78,10 +69,6 @@ function parseCertIndex(): number {
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
-/**
- * Дождаться инициализации cadesplugin (как на песочнице: await window.cadesplugin).
- * Методы API — на window.cadesplugin после успешного await.
- */
 export async function getCadesPlugin(): Promise<CadesPluginApi> {
   if (typeof window.cadesplugin === "undefined") {
     throw new Error(
@@ -89,9 +76,6 @@ export async function getCadesPlugin(): Promise<CadesPluginApi> {
     );
   }
 
-  // cadesplugin_api.js v2.4.5: plugin_resolve() вызывается без аргумента,
-  // поэтому await даёт undefined. CreateObjectAsync навешан на Promise-объект.
-  // Ждём инициализации через await, но API берём с window.cadesplugin напрямую.
   try {
     await window.cadesplugin;
   } catch (error) {
@@ -145,11 +129,10 @@ async function signWithCadesPlugin(
   await oSigner.propset_CheckCertificate!(true);
 
   const oSignedData = await cadesplugin.CreateObjectAsync("CAdESCOM.CadesSignedData");
-  // JSON-тело: прямое UCS2LE-кодирование (btoa ломается на кириллице и спецсимволах).
+
   await oSignedData.propset_ContentEncoding!(cadesplugin.CADESCOM_STRING_TO_UCS2LE);
   await oSignedData.propset_Content!(bodyString);
 
-  // Откреплённая подпись для заголовка X-Signature заказа СУЗ (detached=true).
   const signed = await oSignedData.SignCades!(oSigner, cadesplugin.CADESCOM_CADES_BES, true);
 
   await oStore.Close?.();
@@ -269,7 +252,6 @@ function base64ToUtf8(bodyBase64: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-/** Откреплённая подпись base64-документа (True API LK_RECEIPT). */
 export async function signBodyBase64(
   bodyBase64: string,
   options: { certIndex?: number; thumbprint?: string } = {},
@@ -380,14 +362,12 @@ async function signAttachedWithCadesPlugin(
   await oSignedData.propset_ContentEncoding!(cadesplugin.CADESCOM_BASE64_TO_BINARY);
   await oSignedData.propset_Content!(btoa(challengeData));
 
-  // Присоединённая подпись (detached=false) для simpleSignIn.
   const signed = await oSignedData.SignCades!(oSigner, cadesplugin.CADESCOM_CADES_BES, false);
 
   await oStore.Close?.();
   return signed.replace(/[\r\n]/g, "");
 }
 
-/** Список сертификатов для выбора в UI (индекс + CN). */
 export async function listCertificateOptions(): Promise<CertificateOption[]> {
   const cadesplugin = await getCadesPlugin();
 
@@ -412,7 +392,6 @@ export async function listCertificateOptions(): Promise<CertificateOption[]> {
   return list;
 }
 
-/** Подпись challenge от auth/key для simpleSignIn (присоединённая подпись). */
 export async function signAuthChallenge(
   challengeData: string,
   certIndex: number = 1,
