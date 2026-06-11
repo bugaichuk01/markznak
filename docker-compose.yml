@@ -31,7 +31,10 @@ services:
       ]
     ports:
       - "8000:8000"
+    env_file:
+      - ./backend/.env
     environment:
+      # Перекрывает DATABASE_URL из backend/.env (там часто localhost; в контейнере — хост db).
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://markznak:markznak@db:5432/markznak}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
     volumes:

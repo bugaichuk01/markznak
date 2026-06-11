@@ -64,12 +64,48 @@ async def generate_upd_xml(document_id: UUID, db: AsyncSession) -> bytes:
         ДатаДок=document.created_at.date().isoformat(),
     )
 
-    etree.SubElement(
+    sf_node = etree.SubElement(
         doc_node,
         "СвСчФакт",
         НомерСчФ=_text(document.document_number),
         ДатаСчФ=document.created_at.date().isoformat(),
     )
+
+    if any([document.seller_inn, document.seller_name]):
+        seller_node = etree.SubElement(sf_node, "СвПрод")
+        seller_id = etree.SubElement(seller_node, "ИдСв")
+        if document.seller_inn:
+            org_attrs: dict[str, str] = {"ИННЮЛ": _text(document.seller_inn)}
+            if document.seller_kpp:
+                org_attrs["КПП"] = _text(document.seller_kpp)
+            if document.seller_name:
+                org_attrs["НаимОрг"] = _text(document.seller_name)
+            etree.SubElement(seller_id, "СвЮЛУч", attrib=org_attrs)
+        if document.seller_address:
+            addr = etree.SubElement(seller_node, "Адрес")
+            etree.SubElement(
+                addr,
+                "АдрТекст",
+                attrib={"АдрТекст": _text(document.seller_address)},
+            )
+
+    if any([document.buyer_inn, document.buyer_name]):
+        buyer_node = etree.SubElement(sf_node, "СвПокуп")
+        buyer_id = etree.SubElement(buyer_node, "ИдСв")
+        if document.buyer_inn:
+            org_attrs = {"ИННЮЛ": _text(document.buyer_inn)}
+            if document.buyer_kpp:
+                org_attrs["КПП"] = _text(document.buyer_kpp)
+            if document.buyer_name:
+                org_attrs["НаимОрг"] = _text(document.buyer_name)
+            etree.SubElement(buyer_id, "СвЮЛУч", attrib=org_attrs)
+        if document.buyer_address:
+            addr = etree.SubElement(buyer_node, "Адрес")
+            etree.SubElement(
+                addr,
+                "АдрТекст",
+                attrib={"АдрТекст": _text(document.buyer_address)},
+            )
 
     table_node = etree.SubElement(doc_node, "ТаблСчФакт")
     for idx, code in enumerate(document.marking_codes, start=1):

@@ -8,6 +8,68 @@
             <xs:sequence>
               <xs:element name="СвСчФакт">
                 <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="СвПрод" minOccurs="0">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element name="ИдСв">
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element name="СвЮЛУч">
+                                  <xs:complexType>
+                                    <xs:attribute name="ИННЮЛ" type="xs:string" use="optional"/>
+                                    <xs:attribute name="КПП" type="xs:string" use="optional"/>
+                                    <xs:attribute name="НаимОрг" type="xs:string" use="optional"/>
+                                  </xs:complexType>
+                                </xs:element>
+                              </xs:sequence>
+                            </xs:complexType>
+                          </xs:element>
+                          <xs:element name="Адрес" minOccurs="0">
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element name="АдрТекст">
+                                  <xs:complexType>
+                                    <xs:attribute name="АдрТекст" type="xs:string" use="optional"/>
+                                  </xs:complexType>
+                                </xs:element>
+                              </xs:sequence>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                      </xs:complexType>
+                    </xs:element>
+                    <xs:element name="СвПокуп" minOccurs="0">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element name="ИдСв">
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element name="СвЮЛУч">
+                                  <xs:complexType>
+                                    <xs:attribute name="ИННЮЛ" type="xs:string" use="optional"/>
+                                    <xs:attribute name="КПП" type="xs:string" use="optional"/>
+                                    <xs:attribute name="НаимОрг" type="xs:string" use="optional"/>
+                                  </xs:complexType>
+                                </xs:element>
+                              </xs:sequence>
+                            </xs:complexType>
+                          </xs:element>
+                          <xs:element name="Адрес" minOccurs="0">
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element name="АдрТекст">
+                                  <xs:complexType>
+                                    <xs:attribute name="АдрТекст" type="xs:string" use="optional"/>
+                                  </xs:complexType>
+                                </xs:element>
+                              </xs:sequence>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                      </xs:complexType>
+                    </xs:element>
+                  </xs:sequence>
                   <xs:attribute name="НомерСчФ" type="xs:string" use="required"/>
                   <xs:attribute name="ДатаСчФ" type="xs:date" use="required"/>
                 </xs:complexType>

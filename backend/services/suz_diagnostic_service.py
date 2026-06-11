@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from settings import get_settings
+from services.suz_integration_service import _normalize_suz_client_token, build_suz_v3_ping_url
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ async def _curl_probe_json(
     timeout_sec: int = 10,
     tls_extra: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """GET к orders с фиктивным токеном: при живом HTTPS ожидаем код уровня 401/403, а не transport error."""
+    """GET /api/v3/ping с фиктивным clientToken: при живом HTTPS ожидаем 401/403, а не transport error."""
     if not shutil.which("curl"):
         return {"error": "curl not installed in image"}
 
@@ -117,7 +118,7 @@ async def _curl_probe_json(
         *tls_extra,
         "-k",
         "-H",
-        f"clientToken: {token_placeholder}",
+        f"clientToken: {_normalize_suz_client_token(token_placeholder)}",
         "-H",
         "Accept: application/json",
         "-w",
@@ -160,7 +161,7 @@ async def _curl_probe_json(
 
 async def diagnose_suz_oms_endpoint() -> dict[str, Any]:
     """
-    Сбор фактов о TLS/HTTP без clientToken пользователя.
+    Сбор фактов о TLS/HTTP без реального clientToken пользователя.
 
     Сравнивает настроенный SUZ_API_BASE_URL и при эвристике — альтернативу suz.sandbox.crptech.ru.
     """
@@ -208,7 +209,7 @@ async def diagnose_suz_oms_endpoint() -> dict[str, Any]:
             tls_ok, tls_err = await _tls_handshake_probe(host, port)
             resolver_notes = _resolver_warnings(host)
 
-            ping_path = f"{base}/webapi/v3/orders?omsId={oms}"
+            ping_path = build_suz_v3_ping_url(base, oms)
             curl_profiles: dict[str, Any] = {}
             for p_name, tls_flags in (
                 ("default_tls", ()),

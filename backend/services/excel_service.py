@@ -1,10 +1,11 @@
-"""Генерация шаблонов Excel и импорт связок GTIN ↔ OZON ID."""
+"""Генерация шаблонов Excel и импорт связок GTIN ↔ OZON ID / кодов маркировки."""
 
 from __future__ import annotations
 
 import csv
 import io
 import re
+import uuid
 from typing import BinaryIO
 
 from openpyxl import Workbook, load_workbook
@@ -12,7 +13,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import OzonMapping
+from models import EmissionOrder, EmissionOrderStatus, OzonMapping
 from schemas import ExcelTemplateProduct
 
 
@@ -166,3 +167,75 @@ async def import_ozon_ids_from_file(
 
     await session.commit()
     return created, updated, skipped
+
+
+def _read_marking_codes_csv(file_body: bytes) -> list[str]:
+    text = file_body.decode("utf-8-sig", errors="replace")
+    codes: list[str] = []
+    # GS1-разделители (\x1d, \x1e) в CSV часто превращаются в переносы строк — собираем части в один код
+    current_code = ""
+    for line in text.splitlines():
+        line = line.strip().strip('"').strip("'")
+        if not line:
+            continue
+        if line.startswith("01") and len(line) > 10:
+            if current_code:
+                codes.append(current_code)
+            current_code = line
+        elif current_code:
+            current_code += line
+        else:
+            codes.append(line)
+    if current_code:
+        codes.append(current_code)
+    return codes
+
+
+def _read_marking_codes_xlsx(file_body: bytes) -> list[str]:
+    wb = load_workbook(io.BytesIO(file_body), read_only=True, data_only=True)
+    ws = wb.active
+    codes: list[str] = []
+    for row in ws.iter_rows(min_row=1, values_only=True):
+        if row and row[0] is not None:
+            code = str(row[0]).strip()
+            if code:
+                codes.append(code)
+    wb.close()
+    return codes
+
+
+async def import_marking_codes_from_file(
+    session: AsyncSession,
+    filename: str,
+    file_body: bytes,
+) -> tuple[int, int, list[str]]:
+    """
+    Импорт кодов маркировки из CSV или Excel.
+    Возвращает (добавлено, пропущено, ошибки).
+
+    CSV: один код на строку.
+    Excel (.xlsx): коды в первом столбце.
+    """
+    lower = filename.lower()
+    if lower.endswith(".csv"):
+        codes = _read_marking_codes_csv(file_body)
+    elif lower.endswith(".xlsx"):
+        codes = _read_marking_codes_xlsx(file_body)
+    else:
+        raise ValueError("Поддерживаются только .csv и .xlsx файлы")
+
+    if not codes:
+        raise ValueError("Файл не содержит кодов маркировки")
+
+    import_order = EmissionOrder(
+        id=uuid.uuid4(),
+        gtin=None,
+        quantity=len(codes),
+        status=EmissionOrderStatus.AVAILABLE,
+        suz_order_id=None,
+        suz_marking_codes=codes,
+    )
+    session.add(import_order)
+    await session.commit()
+
+    return len(codes), 0, []

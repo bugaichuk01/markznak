@@ -5,11 +5,24 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+
 from database import get_db_session
+from models import DocumentUPD
 from schemas import DocumentUPDResponse, UpdCreateRequest, UpdSendRequest
 from services import edo_integration_service, upd_service, xml_generator_service
 
 router = APIRouter(tags=["upd"])
+
+
+@router.get("/upd/list", response_model=list[DocumentUPDResponse])
+async def list_upds(
+    session: AsyncSession = Depends(get_db_session),
+) -> list[DocumentUPD]:
+    result = await session.execute(
+        select(DocumentUPD).order_by(DocumentUPD.created_at.desc()).limit(50)
+    )
+    return list(result.scalars().all())
 
 
 @router.post(

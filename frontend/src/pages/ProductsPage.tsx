@@ -1,4 +1,7 @@
 ﻿import { ChangeEvent, useRef, useState } from "react";
+import PageHeader from "../components/ui/PageHeader";
+import Alert from "../components/ui/Alert";
+import EmptyState from "../components/ui/EmptyState";
 import { Download, Loader2, Upload } from "lucide-react";
 import apiClient from "../api/client";
 
@@ -142,38 +145,36 @@ export default function ProductsPage() {
   }
 
   return (
-    <div className="space-y-8">
-      <section>
-        <h1 className="text-2xl font-semibold text-slate-900">Товары и Ozon</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Загрузка XML, сверка данных и массовое обновление Ozon ID.
-        </p>
-      </section>
+    <div className="page-container">
+      <PageHeader
+        title="Товары и Ozon"
+        description="Загрузка XML, сверка данных и массовое обновление Ozon ID."
+      />
 
       {error ? (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <Alert variant="error" onDismiss={() => setError(null)} className="mb-6">
           {error}
-        </div>
+        </Alert>
       ) : null}
 
       {importInfo ? (
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        <Alert variant="success" onDismiss={() => setImportInfo(null)} className="mb-6">
           {importInfo}
-        </div>
+        </Alert>
       ) : null}
 
-      <section className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-5">
-        <h2 className="text-lg font-medium text-slate-900">Загрузка XML от Ozon</h2>
-        <p className="text-sm text-slate-600">
+      <section className="card mb-8 space-y-4 p-6">
+        <h2 className="text-lg font-semibold text-forest-950">Загрузка XML от Ozon</h2>
+        <p className="text-sm text-sage-600">
           Пример имени файла из личного кабинета:{" "}
-          <span className="font-mono text-slate-800">offers_12345678.xml</span>
+          <span className="font-mono text-forest-800">offers_12345678.xml</span>
         </p>
 
         <button
           type="button"
           onClick={() => xmlInputRef.current?.click()}
           disabled={isUploadingXml}
-          className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+          className="btn-secondary"
         >
           {isUploadingXml ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
           Загрузить XML от Ozon
@@ -189,12 +190,12 @@ export default function ProductsPage() {
       </section>
 
       <section>
-        <div className="mb-3 flex flex-wrap gap-3">
+        <div className="mb-4 flex flex-wrap gap-3">
           <button
             type="button"
             onClick={() => void handleDownloadTemplate()}
             disabled={isDownloadingExcel}
-            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+            className="btn-primary"
           >
             {isDownloadingExcel ? (
               <Loader2 size={16} className="animate-spin" />
@@ -208,7 +209,7 @@ export default function ProductsPage() {
             type="button"
             onClick={() => excelInputRef.current?.click()}
             disabled={isImportingExcel}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+            className="btn-secondary"
           >
             {isImportingExcel ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
             Импорт Excel (csv, xlsx)
@@ -223,28 +224,31 @@ export default function ProductsPage() {
           />
         </div>
 
-        <div className="overflow-hidden rounded-xl border border-slate-200">
-          <table className="min-w-full divide-y divide-slate-200 bg-white text-sm">
-            <thead className="bg-slate-50 text-left text-slate-600">
+        <div className="table-container">
+          <table className="table-base min-w-full">
+            <thead>
               <tr>
-                <th className="px-4 py-3 font-medium">Артикул</th>
-                <th className="px-4 py-3 font-medium">Наименование</th>
-                <th className="px-4 py-3 font-medium">GTIN</th>
-                <th className="px-4 py-3 font-medium">Ozon ID</th>
+                <th>Артикул</th>
+                <th>Наименование</th>
+                <th>GTIN</th>
+                <th>Ozon ID</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-slate-700">
+            <tbody>
               {!isTableVisible ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center text-slate-500">
-                    Загрузите XML файл, чтобы увидеть товары.
+                  <td colSpan={4}>
+                    <EmptyState
+                      title="Загрузите XML"
+                      description="Загрузите XML файл от Ozon, чтобы увидеть список товаров."
+                    />
                   </td>
                 </tr>
               ) : null}
 
               {isTableVisible && products.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan={4} className="px-4 py-12 text-center text-sage-500">
                     В ответе нет данных по товарам.
                   </td>
                 </tr>
@@ -252,10 +256,10 @@ export default function ProductsPage() {
 
               {products.map((product) => (
                 <tr key={`${product.article}-${product.gtin}`}>
-                  <td className="px-4 py-3">{product.article}</td>
-                  <td className="px-4 py-3">{product.name}</td>
-                  <td className="px-4 py-3">{product.gtin}</td>
-                  <td className="px-4 py-3">{product.ozonId || "-"}</td>
+                  <td>{product.article}</td>
+                  <td>{product.name}</td>
+                  <td>{product.gtin}</td>
+                  <td>{product.ozonId || "—"}</td>
                 </tr>
               ))}
             </tbody>

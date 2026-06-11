@@ -48,6 +48,8 @@ class EmissionOrderStatus(StrEnum):
     CREATED = "created"
     PENDING = "pending"
     AVAILABLE = "available"
+    EXHAUSTED = "exhausted"
+    CLOSED = "closed"
     REJECTED = "rejected"
 
 
@@ -58,12 +60,14 @@ class DeviceCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     oms_id: str = Field(..., min_length=1, max_length=255)
     connection_id: str = Field(..., min_length=1, max_length=512)
+    inn: str | None = Field(None, max_length=12)
 
 
 class DeviceUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=255)
     oms_id: str | None = Field(None, min_length=1, max_length=255)
     connection_id: str | None = Field(None, min_length=1, max_length=512)
+    inn: str | None = Field(None, max_length=12)
 
 
 class DeviceResponse(BaseModel):
@@ -73,6 +77,7 @@ class DeviceResponse(BaseModel):
     name: str
     oms_id: str
     connection_id: str
+    inn: str | None
     created_at: datetime
 
 
@@ -181,6 +186,22 @@ class ProductCardCreate(BaseModel):
     cat_id: int | None = Field(None, gt=0)
     name: str = Field(..., min_length=1, max_length=512)
     status: ProductCardStatus = ProductCardStatus.DRAFT
+    brand: str | None = None
+    color: str | None = None
+    size: str | None = None
+    size_type: str | None = None
+    composition: str | None = None
+    country: str | None = None
+    gender: str | None = None
+    product_kind: str | None = None
+    regulation: str | None = None
+    tn_ved_code: str | None = None
+    tn_ved_group: str | None = None
+    model_article_type: str | None = None
+    model_article: str | None = None
+    custom_name: bool = False
+    is_set: bool = False
+    extra_attrs: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_business_rules(self) -> "ProductCardCreate":
@@ -201,6 +222,22 @@ class ProductCardUpdate(BaseModel):
     gtin: str | None = Field(None, min_length=8, max_length=14)
     name: str | None = Field(None, min_length=1, max_length=512)
     status: ProductCardStatus | None = None
+    brand: str | None = None
+    color: str | None = None
+    size: str | None = None
+    size_type: str | None = None
+    composition: str | None = None
+    country: str | None = None
+    gender: str | None = None
+    product_kind: str | None = None
+    regulation: str | None = None
+    tn_ved_code: str | None = None
+    tn_ved_group: str | None = None
+    model_article_type: str | None = None
+    model_article: str | None = None
+    custom_name: bool | None = None
+    is_set: bool | None = None
+    extra_attrs: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_bundle_edit(self) -> "ProductCardUpdate":
@@ -208,6 +245,8 @@ class ProductCardUpdate(BaseModel):
             raise ValueError(
                 "Карточки с типом Набор создаются и редактируются только через сайт Честного Знака"
             )
+        if self.tn_ved is not None and not self.tn_ved.strip().isdigit():
+            raise ValueError("ТН ВЭД должен содержать только цифры")
         return self
 
 
@@ -224,6 +263,80 @@ class ProductCardResponse(BaseModel):
     national_catalog_feed_status: str | None
     national_catalog_feed_payload: dict[str, Any] | None
     created_at: datetime
+    brand: str | None = None
+    color: str | None = None
+    size: str | None = None
+    size_type: str | None = None
+    composition: str | None = None
+    country: str | None = None
+    gender: str | None = None
+    product_kind: str | None = None
+    regulation: str | None = None
+    tn_ved_code: str | None = None
+    tn_ved_group: str | None = None
+    model_article_type: str | None = None
+    model_article: str | None = None
+    custom_name: bool = False
+    is_set: bool = False
+    extra_attrs: dict[str, Any] | None = None
+
+
+class ProductCardListResponse(BaseModel):
+    items: list[ProductCardResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+# --- GtinExtraFields ---
+
+
+class GtinExtraFieldsBase(BaseModel):
+    gtin: str = Field(..., min_length=8, max_length=14)
+    name: str | None = None
+    article: str | None = None
+    size: str | None = None
+    color: str | None = None
+    barcode: str | None = None
+    country: str | None = None
+    brand: str | None = None
+    composition: str | None = None
+    edo_inn: str | None = None
+    edo_kpp: str | None = None
+    edo_address: str | None = None
+    extra: dict[str, Any] | None = None
+
+
+class GtinExtraFieldsCreate(GtinExtraFieldsBase):
+    pass
+
+
+class GtinExtraFieldsUpdate(BaseModel):
+    name: str | None = None
+    article: str | None = None
+    size: str | None = None
+    color: str | None = None
+    barcode: str | None = None
+    country: str | None = None
+    brand: str | None = None
+    composition: str | None = None
+    edo_inn: str | None = None
+    edo_kpp: str | None = None
+    edo_address: str | None = None
+    extra: dict[str, Any] | None = None
+
+
+class GtinExtraFieldsResponse(GtinExtraFieldsBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class GtinExtraFieldsListResponse(BaseModel):
+    items: list[GtinExtraFieldsResponse]
+    total: int
 
 
 # --- EmissionOrder ---
@@ -296,6 +409,56 @@ class MarkingCodePrintOptionsResponse(BaseModel):
     codes: list[str]
 
 
+class MarkingCodeItem(BaseModel):
+    code: str
+    gtin: str | None
+    order_id: str
+    suz_order_id: str | None
+    quantity_total: int
+    created_at: datetime
+
+
+class MarkingCodesListResponse(BaseModel):
+    items: list[MarkingCodeItem]
+    total: int
+
+
+class CisStatusRequest(BaseModel):
+    cises: list[str] = Field(..., min_length=1, max_length=50)
+
+
+class CisStatusItem(BaseModel):
+    cis: str
+    status: str | None = None
+    owner_inn: str | None = None
+    owner_name: str | None = None
+    gtin: str | None = None
+    produced_date: str | None = None
+    error: str | None = None
+
+
+class CisStatusResponse(BaseModel):
+    results: list[CisStatusItem]
+    total: int
+    checked: int
+
+
+class FetchCodesResponse(BaseModel):
+    order_id: UUID
+    codes_count: int
+    status: str
+
+
+class CloseOrderRequest(BaseModel):
+    signature: str  # X-Signature от фронта (откреплённая подпись тела)
+
+
+class CloseOrderResponse(BaseModel):
+    success: bool
+    order_id: str
+    status: str
+
+
 class EmissionOrderStatusUpdateRequest(BaseModel):
     status: EmissionOrderStatus
 
@@ -317,15 +480,57 @@ class SuzSendOrderPayload(BaseModel):
     payload: dict[str, Any]
 
 
-class SuzSendOrderResponse(BaseModel):
-    """Результат «Отправить в СУЗ»: обновлённый локальный заказ + краткая сводка ответа удалённой стороны."""
+class SuzOrderPayloadPreview(BaseModel):
+    """Тело POST /api/v3/order для подписи в браузере (строка body_string = X-Signature)."""
 
-    emission_order: EmissionOrderResponse
+    body: dict[str, Any]
+    body_string: str
+    release_method_type: str
+    allowed_release_method_types: list[str]
+    gtin: str
+
+
+class SuzSignedProxyRequest(BaseModel):
+    """
+    Подписанный на фронтенде (cadesplugin) запрос — backend только проксирует в СУЗ.
+
+    ``body_string`` должен совпадать с тем, что подписали в браузере (байт-в-байт).
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    order_body: dict[str, Any]
+    body_string: str = Field(..., min_length=2)
+    signature: str = Field(..., min_length=1)
+    x_signature: str | None = Field(None, min_length=1, description="Устаревшее имя поля")
+    local_order_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _resolve_signature(self) -> "SuzSignedProxyRequest":
+        sig = (self.signature or self.x_signature or "").replace("\r", "").replace("\n", "").strip()
+        if not sig:
+            raise ValueError("Нужна подпись тела запроса (signature), сформированная в браузере через cadesplugin.")
+        object.__setattr__(self, "signature", sig)
+        return self
+
+
+class SuzCreateOrderProxyRequest(SuzSignedProxyRequest):
+    """POST /emission-orders/create — создать заказ в СУЗ через прокси."""
+
+
+class SuzSendOrderRequest(SuzSignedProxyRequest):
+    """POST /emission-orders/{id}/send — привязать к локальному черновику."""
+
+
+class SuzSendOrderResponse(BaseModel):
+    """Результат прокси в СУЗ: локальный заказ (если был) + ответ удалённой стороны."""
+
+    emission_order: EmissionOrderResponse | None = None
     suz: SuzSendOrderPayload
 
 
 class SuzConnectivityDiagnosticsResponse(BaseModel):
-    """Диагностика TLS/DNS/curl до OMS без реального clientToken (фиктивный токен в запросе)."""
+    """Диагностика TLS/DNS/curl до OMS /api/v3/ping без реального clientToken (фиктивный токен в запросе)."""
 
     heuristic_hints: list[str]
     suggested_base_url_when_nk_crptech_sandbox: str | None
@@ -399,6 +604,92 @@ class ExcelImportResult(BaseModel):
     skipped: int
 
 
+class MarkingCodesImportResult(BaseModel):
+    """Результат импорта кодов маркировки из CSV/Excel."""
+
+    added: int
+    skipped: int
+    errors: list[str] = Field(default_factory=list)
+
+
+# --- Ввод в оборот (отчёт о нанесении) ---
+
+
+class UtilisationStatus(StrEnum):
+    DRAFT = "draft"
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    ERROR = "error"
+
+
+class UtilisationReportCreate(BaseModel):
+    marking_codes: list[str]
+    product_group: str = "perfumery"
+
+
+class UtilisationSendRequest(BaseModel):
+    signature: str
+
+
+class UtilisationReportResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    product_group: str
+    marking_codes: list[str]
+    status: UtilisationStatus
+    report_id: str | None
+    error_message: str | None
+    created_at: datetime
+    sent_at: datetime | None
+
+
+class UtilisationBodyPreview(BaseModel):
+    body: str
+    body_dict: dict[str, Any]
+
+
+# --- Вывод из оборота (LK_RECEIPT) ---
+
+
+class WithdrawalStatus(StrEnum):
+    DRAFT = "draft"
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    ERROR = "error"
+
+
+class WithdrawalReportCreate(BaseModel):
+    marking_codes: list[str]
+    withdrawal_type: str = "SOLD"
+    product_group: str = "perfumery"
+
+
+class WithdrawalSendRequest(BaseModel):
+    signature: str
+
+
+class WithdrawalReportResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    withdrawal_type: str
+    product_group: str
+    marking_codes: list[str]
+    status: WithdrawalStatus
+    document_id: str | None
+    error_message: str | None
+    created_at: datetime
+    sent_at: datetime | None
+
+
+class WithdrawalBodyPreview(BaseModel):
+    body: str
+    body_b64: str
+
+
 # --- УПД (создание через API) ---
 
 
@@ -409,6 +700,14 @@ class UpdCreateRequest(BaseModel):
     marking_codes: list[str] = Field(default_factory=list)
     disable_owner_control: bool = False
     edo_type: EdoType
+    seller_inn: str | None = None
+    seller_kpp: str | None = None
+    seller_name: str | None = None
+    seller_address: str | None = None
+    buyer_inn: str | None = None
+    buyer_kpp: str | None = None
+    buyer_name: str | None = None
+    buyer_address: str | None = None
 
 
 class UpdSendRequest(BaseModel):

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Device, DocumentUPD

@@ -1,9 +1,26 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import PageHeader from "../components/ui/PageHeader";
+import Alert from "../components/ui/Alert";
 import axios from "axios";
 import { Loader2, RefreshCw, X } from "lucide-react";
 import apiClient from "../api/client";
+import {
+  detectSigningBackend,
+  getUserCertificates,
+  parseCertIndex,
+  type SigningBackend,
+  type UserCertificate,
+} from "../services/signingService";
+import { closeEmissionOrder, sendLocalOrderToSuz } from "../services/suzOrderApi";
+import { RELEASE_METHOD_LABELS } from "../services/suzGtinRules";
 
-type EmissionOrderStatus = "created" | "pending" | "available" | "rejected";
+type EmissionOrderStatus =
+  | "created"
+  | "pending"
+  | "available"
+  | "exhausted"
+  | "closed"
+  | "rejected";
 
 type EmissionOrder = {
   id: string;
@@ -12,8 +29,14 @@ type EmissionOrder = {
   quantity: number;
   status: EmissionOrderStatus;
   suz_order_id: string | null;
+  suz_error?: string | null;
   suz_marking_codes?: string[];
 };
+
+function getOrderError(order: EmissionOrder): string | null {
+  if (order.status !== "rejected") return null;
+  return order.suz_error || "Заказ отклонён СУЗ";
+}
 
 type ProductCardOption = {
   id: string;
@@ -26,11 +49,31 @@ type SuzSyncResult = {
   total_remote: number;
 };
 
-const statusLabel: Record<EmissionOrderStatus, string> = {
+type SuzOrderPayloadPreview = {
+  body: Record<string, unknown>;
+  body_string: string;
+  release_method_type: string;
+  allowed_release_method_types: string[];
+  gtin: string;
+};
+
+
+const statusLabel: Record<string, string> = {
   created: "Создан",
-  pending: "В обработке",
-  available: "Доступен",
-  rejected: "Отклонён",
+  pending: "В ожидании",
+  available: "Готов к выдаче",
+  exhausted: "Не содержит больше кодов",
+  closed: "Закрыт",
+  rejected: "Не доступен для работы",
+};
+
+const statusColor: Record<string, string> = {
+  created: "bg-slate-100 text-slate-700",
+  pending: "bg-amber-100 text-amber-700",
+  available: "bg-emerald-100 text-emerald-700",
+  exhausted: "bg-blue-100 text-blue-700",
+  closed: "bg-gray-100 text-gray-500",
+  rejected: "bg-red-100 text-red-700",
 };
 
 export default function OrdersPage() {
@@ -51,6 +94,17 @@ export default function OrdersPage() {
   const [gtinPatchOrderId, setGtinPatchOrderId] = useState<string | null>(null);
   const [gtinPatchValue, setGtinPatchValue] = useState("");
   const [isPatchingGtin, setIsPatchingGtin] = useState(false);
+  const [sendModalOrderId, setSendModalOrderId] = useState<string | null>(null);
+  const [sendReleaseMethod, setSendReleaseMethod] = useState("REMARK");
+  const [sendProducer, setSendProducer] = useState("");
+  const [sendAllowedMethods, setSendAllowedMethods] = useState<string[]>(["REMARK"]);
+  const [sendPayloadPreview, setSendPayloadPreview] = useState<SuzOrderPayloadPreview | null>(null);
+  const [certificates, setCertificates] = useState<UserCertificate[]>([]);
+  const [selectedCertIndex, setSelectedCertIndex] = useState(parseCertIndex());
+  const [signingBackend, setSigningBackend] = useState<SigningBackend | null>(null);
+  const [isLoadingSendModal, setIsLoadingSendModal] = useState(false);
+  const [fetchingCodes, setFetchingCodes] = useState<string | null>(null);
+  const [closingOrder, setClosingOrder] = useState<string | null>(null);
 
   const mergeableSelectedIds = useMemo(() => {
     const createdWithCard = new Set(
@@ -93,10 +147,12 @@ export default function OrdersPage() {
 
   async function loadCards() {
     try {
-      const response = await apiClient.get<ProductCardOption[]>("/product-cards/");
-      const options = Array.isArray(response.data)
-        ? response.data.map((card) => ({ id: card.id, name: card.name }))
-        : [];
+      const response = await apiClient.get<
+        ProductCardOption[] | { items: ProductCardOption[] }
+      >("/product-cards/", { params: { limit: 1000, offset: 0 } });
+      const raw = response.data;
+      const list = Array.isArray(raw) ? raw : (raw.items ?? []);
+      const options = list.map((card) => ({ id: card.id, name: card.name }));
       setCards(options);
       if (options.length > 0 && !selectedCardId) {
         setSelectedCardId(options[0].id);
@@ -141,12 +197,72 @@ export default function OrdersPage() {
     }
   }
 
-  async function handleSendOrderToSuz(orderId: string) {
+  async function openSendToSuzModal(orderId: string) {
+    setSendModalOrderId(orderId);
+    setSendProducer("");
+    setSendPayloadPreview(null);
+    setError(null);
+    setIsLoadingSendModal(true);
+    try {
+      const backend = await detectSigningBackend();
+      setSigningBackend(backend);
+      const certs = await getUserCertificates();
+      setCertificates(certs);
+      if (certs.length > 0) {
+        setSelectedCertIndex(1);
+      }
+      const preview = await apiClient.get<SuzOrderPayloadPreview>(
+        `/emission-orders/${orderId}/suz-order-payload`,
+      );
+      setSendPayloadPreview(preview.data);
+      setSendReleaseMethod(preview.data.release_method_type);
+      setSendAllowedMethods(preview.data.allowed_release_method_types);
+    } catch (requestError) {
+      console.error("Failed to prepare SUZ send:", requestError);
+      if (axios.isAxiosError(requestError)) {
+        const detail = requestError.response?.data?.detail;
+        if (typeof detail === "string" && detail.trim()) {
+          setError(detail);
+        } else {
+          setError("Не удалось подготовить отправку в СУЗ. Проверьте КриптоПро и GTIN заказа.");
+        }
+      } else if (requestError instanceof Error) {
+        setError(requestError.message);
+      } else {
+        setError("Не удалось подготовить отправку в СУЗ.");
+      }
+      setSendModalOrderId(null);
+    } finally {
+      setIsLoadingSendModal(false);
+    }
+  }
+
+  async function handleConfirmSendToSuz() {
+    const orderId = sendModalOrderId;
+    if (!orderId || !sendPayloadPreview) return;
+
     setSendLoadingOrderId(orderId);
     setSyncInfo(null);
     setError(null);
     try {
-      await apiClient.post(`/emission-orders/${orderId}/send`);
+      const preview = (
+        await apiClient.get<SuzOrderPayloadPreview>(`/emission-orders/${orderId}/suz-order-payload`, {
+          params: {
+            release_method_type: sendReleaseMethod,
+            ...(sendProducer.trim() ? { producer: sendProducer.trim() } : {}),
+          },
+        })
+      ).data;
+
+      const pickedCert = certificates[selectedCertIndex - 1];
+      await sendLocalOrderToSuz(
+        orderId,
+        preview.body as import("../services/suzOrderApi").SuzOrderBody,
+        preview.body_string,
+        { certIndex: selectedCertIndex, thumbprint: pickedCert?.thumbprint },
+      );
+      setSendModalOrderId(null);
+      setSendPayloadPreview(null);
       setSyncInfo("Заказ отправлен в СУЗ.");
       await loadOrders();
     } catch (requestError) {
@@ -157,6 +273,10 @@ export default function OrdersPage() {
           setError(detail);
           return;
         }
+      }
+      if (requestError instanceof Error) {
+        setError(requestError.message);
+        return;
       }
       setError("Не удалось отправить заказ в СУЗ.");
     } finally {
@@ -232,6 +352,73 @@ export default function OrdersPage() {
     }
   }
 
+  async function handleCloseOrder(orderId: string, suzOrderId: string) {
+    setClosingOrder(orderId);
+    setError(null);
+    try {
+      const pickedCert = certificates[selectedCertIndex - 1];
+      await closeEmissionOrder(orderId, suzOrderId, {
+        certIndex: selectedCertIndex,
+        thumbprint: pickedCert?.thumbprint,
+      });
+      setSyncInfo("Заказ закрыт в СУЗ");
+      await loadOrders();
+    } catch (requestError) {
+      console.error("Failed to close order in SUZ:", requestError);
+      if (axios.isAxiosError(requestError)) {
+        const detail = requestError.response?.data?.detail;
+        if (typeof detail === "string" && detail.trim()) {
+          setError(detail);
+          return;
+        }
+      }
+      if (requestError instanceof Error) {
+        setError(requestError.message);
+        return;
+      }
+      setError("Ошибка при закрытии заказа в СУЗ");
+    } finally {
+      setClosingOrder(null);
+    }
+  }
+
+  async function handleFetchCodes(orderId: string, suzOrderId: string) {
+    setFetchingCodes(orderId);
+    setError(null);
+    try {
+      const response = await apiClient.post<{ codes_count: number }>(
+        `/emission-orders/${orderId}/fetch-codes`,
+      );
+      const { codes_count } = response.data;
+
+      try {
+        const pickedCert = certificates[selectedCertIndex - 1];
+        await closeEmissionOrder(orderId, suzOrderId, {
+          certIndex: selectedCertIndex,
+          thumbprint: pickedCert?.thumbprint,
+        });
+        setSyncInfo(`Скачано ${codes_count} кодов. Заказ закрыт в СУЗ.`);
+      } catch (closeErr) {
+        console.warn("Не удалось закрыть заказ автоматически:", closeErr);
+        setSyncInfo(`Скачано ${codes_count} кодов. Закройте заказ вручную.`);
+      }
+
+      await loadOrders();
+    } catch (requestError) {
+      console.error("Failed to fetch marking codes:", requestError);
+      if (axios.isAxiosError(requestError)) {
+        const detail = requestError.response?.data?.detail;
+        if (typeof detail === "string" && detail.trim()) {
+          setError(detail);
+          return;
+        }
+      }
+      setError("Ошибка при скачивании кодов");
+    } finally {
+      setFetchingCodes(null);
+    }
+  }
+
   async function handleMergeOrders() {
     if (mergeableSelectedIds.length < 2) {
       return;
@@ -262,56 +449,48 @@ export default function OrdersPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <section className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold text-slate-900">Заказы СУЗ</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Черновик создаётся локально («Заказать коды»); в СУЗ — кнопка в строке таблицы или «Отправить в СУЗ (выбранный)»
-            после отметки одного черновика с GTIN. Список с сервера — «Подтянуть из СУЗ». Объединять можно только созданные заказы с
-            карточкой.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => void handleSyncFromSuz()}
-            disabled={isSyncing}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-            Подтянуть из СУЗ
-          </button>
-          {singleSelectedDraftForSuz ? (
+    <div className="page-container">
+      <PageHeader
+        title="Заказы СУЗ"
+        description="Черновик создаётся локально («Заказать коды»); в СУЗ — кнопка в строке таблицы или «Отправить в СУЗ (выбранный)» после отметки одного черновика с GTIN. Список с сервера — «Подтянуть из СУЗ»."
+        actions={
+          <>
             <button
               type="button"
-              onClick={() => void handleSendOrderToSuz(singleSelectedDraftForSuz.id)}
-              disabled={sendLoadingOrderId === singleSelectedDraftForSuz.id}
-              className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-950 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-70"
+              onClick={() => void handleSyncFromSuz()}
+              disabled={isSyncing}
+              className="btn-secondary"
             >
-              {sendLoadingOrderId === singleSelectedDraftForSuz.id ? (
-                <Loader2 size={16} className="animate-spin" />
-              ) : null}
-              Отправить в СУЗ (выбранный)
+              {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+              Подтянуть из СУЗ
             </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={() => setIsModalOpen(true)}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
-          >
-            Заказать коды
-          </button>
-        </div>
-      </section>
+            {singleSelectedDraftForSuz ? (
+              <button
+                type="button"
+                onClick={() => void openSendToSuzModal(singleSelectedDraftForSuz.id)}
+                disabled={sendLoadingOrderId === singleSelectedDraftForSuz.id}
+                className="btn-secondary !border-amber-200 !bg-amber-50 !text-amber-950 hover:!bg-amber-100"
+              >
+                {sendLoadingOrderId === singleSelectedDraftForSuz.id ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : null}
+                Отправить в СУЗ (выбранный)
+              </button>
+            ) : null}
+            <button type="button" onClick={() => setIsModalOpen(true)} className="btn-primary">
+              Заказать коды
+            </button>
+          </>
+        }
+      />
 
       {mergeableSelectedIds.length >= 2 ? (
-        <div className="flex justify-start">
+        <div className="mb-6 flex justify-start">
           <button
             type="button"
             onClick={() => void handleMergeOrders()}
             disabled={isMerging}
-            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+            className="btn-accent"
           >
             {isMerging ? <Loader2 size={16} className="animate-spin" /> : null}
             Объединить заказы
@@ -320,18 +499,20 @@ export default function OrdersPage() {
       ) : null}
 
       {error ? (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+        <Alert variant="error" onDismiss={() => setError(null)} className="mb-6 whitespace-pre-wrap">
+          {error}
+        </Alert>
       ) : null}
 
       {syncInfo ? (
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        <Alert variant="success" onDismiss={() => setSyncInfo(null)} className="mb-6">
           {syncInfo}
-        </div>
+        </Alert>
       ) : null}
 
-      <div className="overflow-hidden rounded-xl border border-slate-200">
-        <table className="min-w-full divide-y divide-slate-200 bg-white text-sm">
-          <thead className="bg-slate-50 text-left text-slate-600">
+      <div className="table-container">
+        <table className="table-base min-w-full">
+          <thead>
             <tr>
               <th className="px-4 py-3 font-medium" />
               <th className="px-4 py-3 font-medium">Заказ СУЗ</th>
@@ -342,10 +523,10 @@ export default function OrdersPage() {
               <th className="min-w-[150px] px-4 py-3 font-medium">Действия</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100 text-slate-700">
+          <tbody>
             {isLoading ? (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
+                <td colSpan={7} className="px-4 py-12 text-center text-sage-500">
                   Загрузка заказов...
                 </td>
               </tr>
@@ -353,7 +534,7 @@ export default function OrdersPage() {
 
             {!isLoading && orders.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
+                <td colSpan={7} className="px-4 py-12 text-center text-sage-500">
                   Заказов пока нет. Нажмите «Подтянуть из СУЗ» или создайте заказ вручную.
                 </td>
               </tr>
@@ -374,7 +555,17 @@ export default function OrdersPage() {
                 order.suz_order_id == null;
               const isChecked = selectedOrderIds.includes(order.id);
               const isSendingRow = sendLoadingOrderId === order.id;
-              const showPlaceholder = !canSpecifyGtin && !canSendToSuz;
+              const canFetchCodes = Boolean(order.suz_order_id) && order.status === "available";
+              const canCloseOrder =
+                Boolean(order.suz_order_id) &&
+                (order.status === "exhausted" || order.status === "available");
+              const hasCachedCodes = (order.suz_marking_codes?.length ?? 0) > 0;
+              const showPlaceholder =
+                !canSpecifyGtin &&
+                !canSendToSuz &&
+                !canFetchCodes &&
+                !canCloseOrder &&
+                !hasCachedCodes;
               return (
                 <tr key={order.id}>
                   <td className="px-4 py-3">
@@ -383,7 +574,7 @@ export default function OrdersPage() {
                       checked={isChecked}
                       disabled={!canSelect}
                       onChange={(event) => toggleOrder(order.id, event.target.checked)}
-                      className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="checkbox-field text-forest-700 focus:ring-forest-500 disabled:cursor-not-allowed disabled:opacity-50"
                     />
                   </td>
                   <td className="max-w-[140px] truncate px-4 py-3 font-mono text-xs" title={order.suz_order_id ?? ""}>
@@ -394,7 +585,18 @@ export default function OrdersPage() {
                     {order.product_card_id ?? "—"}
                   </td>
                   <td className="px-4 py-3">{order.quantity}</td>
-                  <td className="px-4 py-3">{statusLabel[order.status] ?? order.status}</td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`rounded-full px-2 py-1 text-xs font-medium ${statusColor[order.status] ?? "bg-gray-100 text-gray-500"}`}
+                    >
+                      {statusLabel[order.status] ?? order.status}
+                    </span>
+                    {order.status === "rejected" && (
+                      <p className="text-xs text-red-500 mt-0.5">
+                        ⚠️ {getOrderError(order)}
+                      </p>
+                    )}
+                  </td>
                   <td className="max-w-[200px] px-4 py-3">
                     <div className="flex flex-col items-start gap-1.5">
                       {canSpecifyGtin ? (
@@ -405,7 +607,7 @@ export default function OrdersPage() {
                             setGtinPatchValue("");
                             setError(null);
                           }}
-                          className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-900 transition hover:bg-blue-100"
+                          className="btn-xs btn-secondary !min-h-[32px]"
                         >
                           Указать GTIN
                         </button>
@@ -413,15 +615,44 @@ export default function OrdersPage() {
                       {canSendToSuz ? (
                         <button
                           type="button"
-                          onClick={() => void handleSendOrderToSuz(order.id)}
+                          onClick={() => void openSendToSuzModal(order.id)}
                           disabled={isSendingRow}
-                          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-900 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          className="btn-xs btn-secondary !min-h-[32px] !border-amber-200 !bg-amber-50 !text-amber-900 hover:!bg-amber-100"
                         >
                           {isSendingRow ? <Loader2 size={14} className="animate-spin" /> : null}
                           Отправить в СУЗ
                         </button>
                       ) : null}
-                      {showPlaceholder ? <span className="text-xs text-slate-400">—</span> : null}
+                      {canFetchCodes ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleFetchCodes(order.id, order.suz_order_id!)}
+                          disabled={fetchingCodes === order.id}
+                          className="btn-xs btn-primary !min-h-[32px]"
+                        >
+                          {fetchingCodes === order.id ? "Загрузка..." : "Скачать КМ"}
+                        </button>
+                      ) : null}
+                      {hasCachedCodes ? (
+                        <a
+                          href={`/api/v1/emission-orders/${order.id}/codes.csv`}
+                          download
+                          className="btn-xs btn-primary !min-h-[32px]"
+                        >
+                          CSV ({order.suz_marking_codes!.length})
+                        </a>
+                      ) : null}
+                      {canCloseOrder ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleCloseOrder(order.id, order.suz_order_id!)}
+                          disabled={closingOrder === order.id}
+                          className="btn-xs btn-secondary !min-h-[32px] !bg-sage-700 !text-white hover:!bg-sage-800"
+                        >
+                          {closingOrder === order.id ? "Закрытие..." : "Закрыть заказ"}
+                        </button>
+                      ) : null}
+                      {showPlaceholder ? <span className="text-xs text-sage-400">—</span> : null}
                     </div>
                   </td>
                 </tr>
@@ -432,30 +663,30 @@ export default function OrdersPage() {
       </div>
 
       {isModalOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
-          <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
+        <div className="modal-overlay">
+          <div className="modal-panel">
             <div className="mb-4 flex items-start justify-between">
               <div>
-                <h2 className="text-lg font-semibold text-slate-900">Заказать коды</h2>
-                <p className="text-sm text-slate-500">Локальный черновик заказа; затем отправьте его кнопкой «Отправить в СУЗ».</p>
+                <h2 className="text-lg font-semibold text-forest-950">Заказать коды</h2>
+                <p className="text-sm text-sage-600">Локальный черновик заказа; затем отправьте его кнопкой «Отправить в СУЗ».</p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsModalOpen(false)}
-                className="rounded-md p-1 text-slate-500 transition hover:bg-slate-100"
+                className="rounded-lg p-1 text-sage-500 transition hover:bg-forest-50"
               >
                 <X size={18} />
               </button>
             </div>
 
-            <form className="space-y-3" onSubmit={handleCreateOrder}>
-              <label className="flex flex-col gap-1 text-sm text-slate-700">
-                Карточка товара
+            <form className="space-y-4" onSubmit={handleCreateOrder}>
+              <label className="flex flex-col gap-1.5">
+                <span className="label-text">Карточка товара</span>
                 <select
                   value={selectedCardId}
                   onChange={(event) => setSelectedCardId(event.target.value)}
                   required
-                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none ring-blue-500 transition focus:ring-2"
+                  className="select-field"
                 >
                   {cards.length === 0 ? <option value="">Нет доступных карточек</option> : null}
                   {cards.map((card) => (
@@ -466,46 +697,38 @@ export default function OrdersPage() {
                 </select>
               </label>
 
-              <label className="flex flex-col gap-1 text-sm text-slate-700">
-                Количество
+              <label className="flex flex-col gap-1.5">
+                <span className="label-text">Количество</span>
                 <input
                   type="number"
                   min={1}
                   required
                   value={quantity}
                   onChange={(event) => setQuantity(event.target.value)}
-                  className="rounded-lg border border-slate-300 px-3 py-2 outline-none ring-blue-500 transition focus:ring-2"
+                  className="input-field"
                 />
               </label>
 
-              <label className="flex flex-col gap-1 text-sm text-slate-700">
-                GTIN для СУЗ (если карточка без GTIN)
+              <label className="flex flex-col gap-1.5">
+                <span className="label-text">GTIN для СУЗ (если карточка без GTIN)</span>
                 <input
                   type="text"
                   inputMode="numeric"
-                  placeholder="Необязательно: 8–14 цифр"
+                  placeholder="14 цифр"
                   value={orderGtin}
                   onChange={(event) => setOrderGtin(event.target.value.replace(/\D/g, ""))}
-                  className="rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm outline-none ring-blue-500 transition focus:ring-2"
+                  className="input-field font-mono"
                 />
-                <span className="text-xs text-slate-500">
-                  API СУЗ требует GTIN в теле заказа. У техкарточки в НК код может быть пустым — укажите его здесь.
+                <span className="text-xs text-sage-500">
+                  API СУЗ требует GTIN в теле заказа. Для 029… при отправке будет только REMARK без серийников.
                 </span>
               </label>
 
               <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
-                >
+                <button type="button" onClick={() => setIsModalOpen(false)} className="btn-secondary">
                   Отмена
                 </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting || cards.length === 0}
-                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
-                >
+                <button type="submit" disabled={isSubmitting || cards.length === 0} className="btn-primary">
                   {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : null}
                   Создать заказ
                 </button>
@@ -515,13 +738,131 @@ export default function OrdersPage() {
         </div>
       ) : null}
 
-      {gtinPatchOrderId !== null ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
-          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
+      {sendModalOrderId !== null ? (
+        <div className="modal-overlay">
+          <div className="modal-panel">
             <div className="mb-4 flex items-start justify-between">
               <div>
-                <h2 className="text-lg font-semibold text-slate-900">GTIN для отправки в СУЗ</h2>
-                <p className="mt-1 text-sm text-slate-500">
+                <h2 className="text-lg font-semibold text-forest-950">Отправка в СУЗ</h2>
+                <p className="mt-1 text-sm text-sage-600">
+                  Подпись тела запроса (X-Signature) через КриптоПро в браузере, затем POST /api/v3/order.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSendModalOrderId(null);
+                  setSendPayloadPreview(null);
+                }}
+                className="rounded-lg p-1 text-sage-500 transition hover:bg-forest-50"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {isLoadingSendModal ? (
+              <p className="flex items-center gap-2 text-sm text-sage-600">
+                <Loader2 size={16} className="animate-spin" />
+                Подготовка…
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {sendPayloadPreview ? (
+                  <p className="font-mono text-xs text-sage-600">
+                    GTIN: {sendPayloadPreview.gtin} · productGroup: perfumery · templateId: 9
+                    {signingBackend ? (
+                      <>
+                        {" "}
+                        · подпись: {signingBackend === "cadesplugin" ? "cadesplugin" : "crypto-pro"}
+                      </>
+                    ) : null}
+                  </p>
+                ) : null}
+
+                <label className="flex flex-col gap-1.5">
+                  <span className="label-text">Способ выпуска</span>
+                  <select
+                    value={sendReleaseMethod}
+                    onChange={(event) => setSendReleaseMethod(event.target.value)}
+                    disabled={sendAllowedMethods.length <= 1}
+                    className="select-field"
+                  >
+                    {sendAllowedMethods.map((method) => (
+                      <option key={method} value={method}>
+                        {RELEASE_METHOD_LABELS[method] ?? method}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1.5">
+                  <span className="label-text">ИНН владельца (producer), если карточка чужая</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={sendProducer}
+                    onChange={(event) => setSendProducer(event.target.value.replace(/\D/g, ""))}
+                    className="input-field font-mono"
+                  />
+                </label>
+
+                {certificates.length > 0 ? (
+                  <label className="flex flex-col gap-1.5">
+                    <span className="label-text">Сертификат ЭП (cadesplugin)</span>
+                    <select
+                      value={selectedCertIndex}
+                      onChange={(event) => setSelectedCertIndex(Number(event.target.value))}
+                      className="select-field"
+                    >
+                      {certificates.map((certificate, idx) => (
+                        <option key={certificate.thumbprint} value={idx + 1}>
+                          {certificate.ownerName} (до {certificate.validTo})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  <p className="text-xs text-amber-800">
+                    Сертификат: индекс {selectedCertIndex} (VITE_CERT_INDEX). Подпись только в браузере.
+                  </p>
+                )}
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSendModalOrderId(null);
+                      setSendPayloadPreview(null);
+                    }}
+                    className="btn-secondary"
+                  >
+                    Отмена
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!sendPayloadPreview || sendLoadingOrderId === sendModalOrderId}
+                    onClick={() => void handleConfirmSendToSuz()}
+                    className="btn-primary !bg-amber-600 hover:!bg-amber-700"
+                  >
+                    {sendLoadingOrderId === sendModalOrderId ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : null}
+                    Подписать и отправить
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {gtinPatchOrderId !== null ? (
+        <div className="modal-overlay">
+          <div className="modal-panel">
+            <div className="mb-4 flex items-start justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-forest-950">GTIN для отправки в СУЗ</h2>
+                <p className="mt-1 text-sm text-sage-600">
                   Сохраняется только в этом заказе; карточку в Нацкаталоге можно не менять.
                 </p>
               </div>
@@ -531,14 +872,14 @@ export default function OrdersPage() {
                   setGtinPatchOrderId(null);
                   setGtinPatchValue("");
                 }}
-                className="rounded-md p-1 text-slate-500 transition hover:bg-slate-100"
+                className="rounded-lg p-1 text-sage-500 transition hover:bg-forest-50"
               >
                 <X size={18} />
               </button>
             </div>
-            <form className="space-y-3" onSubmit={handlePatchOrderGtin}>
-              <label className="flex flex-col gap-1 text-sm text-slate-700">
-                GTIN (8–14 цифр)
+            <form className="space-y-4" onSubmit={handlePatchOrderGtin}>
+              <label className="flex flex-col gap-1.5">
+                <span className="label-text">GTIN (8–14 цифр)</span>
                 <input
                   type="text"
                   inputMode="numeric"
@@ -547,7 +888,7 @@ export default function OrdersPage() {
                   maxLength={14}
                   value={gtinPatchValue}
                   onChange={(event) => setGtinPatchValue(event.target.value.replace(/\D/g, ""))}
-                  className="rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm outline-none ring-blue-500 transition focus:ring-2"
+                  className="input-field font-mono"
                 />
               </label>
               <div className="flex justify-end gap-2 pt-2">
@@ -557,15 +898,11 @@ export default function OrdersPage() {
                     setGtinPatchOrderId(null);
                     setGtinPatchValue("");
                   }}
-                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+                  className="btn-secondary"
                 >
                   Отмена
                 </button>
-                <button
-                  type="submit"
-                  disabled={isPatchingGtin}
-                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-70"
-                >
+                <button type="submit" disabled={isPatchingGtin} className="btn-primary">
                   {isPatchingGtin ? <Loader2 size={16} className="animate-spin" /> : null}
                   Сохранить
                 </button>

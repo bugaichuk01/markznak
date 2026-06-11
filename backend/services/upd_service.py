@@ -23,6 +23,14 @@ async def create_upd_draft(session: AsyncSession, data: UpdCreateRequest) -> Doc
         edo_type=data.edo_type.value,
         status=DocumentStatus.DRAFT.value,
         xml_draft_content=None,
+        seller_inn=data.seller_inn,
+        seller_kpp=data.seller_kpp,
+        seller_name=data.seller_name,
+        seller_address=data.seller_address,
+        buyer_inn=data.buyer_inn,
+        buyer_kpp=data.buyer_kpp,
+        buyer_name=data.buyer_name,
+        buyer_address=data.buyer_address,
     )
     session.add(doc)
     await session.commit()

@@ -1,7 +1,9 @@
-﻿import { FormEvent, useState } from "react";
+﻿import { FormEvent, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import axios from "axios";
 import apiClient from "../api/client";
+import PageHeader from "../components/ui/PageHeader";
+import Alert from "../components/ui/Alert";
 import {
   checkPluginStatus,
   getUserCertificates,
@@ -16,6 +18,14 @@ type CreateUpdResponse = {
   id?: string | number;
   message?: string;
   edo_type?: EdoTypeApi;
+};
+
+type UpdListItem = {
+  id: string;
+  document_number: string;
+  status: string;
+  marking_codes: string[];
+  created_at: string;
 };
 
 type SendUpdRequest = {
@@ -33,9 +43,18 @@ const CRYPTO_PLUGIN_ERROR =
 
 export default function UpdPage() {
   const [documentNumber, setDocumentNumber] = useState("");
-  const [markingCodesText, setMarkingCodesText] = useState("");
+  const [markingCodes, setMarkingCodes] = useState("");
+  const [preloadedCodesCount, setPreloadedCodesCount] = useState(0);
   const [disableOwnerControl, setDisableOwnerControl] = useState(false);
   const [edoType, setEdoType] = useState<EdoTypeApi>("edo_lite");
+  const [sellerInn, setSellerInn] = useState("");
+  const [sellerKpp, setSellerKpp] = useState("");
+  const [sellerName, setSellerName] = useState("");
+  const [sellerAddress, setSellerAddress] = useState("");
+  const [buyerInn, setBuyerInn] = useState("");
+  const [buyerKpp, setBuyerKpp] = useState("");
+  const [buyerName, setBuyerName] = useState("");
+  const [buyerAddress, setBuyerAddress] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isPluginChecking, setIsPluginChecking] = useState(false);
   const [isCertificatesLoading, setIsCertificatesLoading] = useState(false);
@@ -45,9 +64,55 @@ export default function UpdPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [draftId, setDraftId] = useState<string | number | null>(null);
+  const [upds, setUpds] = useState<UpdListItem[]>([]);
+
+  useEffect(() => {
+    const stored = sessionStorage.getItem("updCodes");
+    if (stored) {
+      const codes = JSON.parse(stored) as string[];
+      setMarkingCodes(codes.join("\n"));
+      setPreloadedCodesCount(codes.length);
+      sessionStorage.removeItem("updCodes");
+
+      if (codes.length > 0) {
+        const firstCode = codes[0];
+        const match = firstCode.match(/^01(\d{14})/);
+        if (match) {
+          const gtin = match[1];
+          apiClient
+            .get<{ items: Array<{ edo_inn?: string; edo_kpp?: string; edo_address?: string }> }>(
+              `/extra-fields/?gtin=${gtin}`,
+            )
+            .then((res) => {
+              const items = res.data.items;
+              if (items.length > 0) {
+                const f = items[0];
+                if (f.edo_inn) setSellerInn(f.edo_inn);
+                if (f.edo_kpp) setSellerKpp(f.edo_kpp);
+                if (f.edo_address) setSellerAddress(f.edo_address);
+              }
+            })
+            .catch(() => {});
+        }
+      }
+    }
+  }, []);
+
+  async function loadUpds() {
+    try {
+      const res = await apiClient.get<UpdListItem[]>("/upd/list");
+      setUpds(res.data);
+    } catch {
+      // список не критичен для формы
+    }
+  }
+
+  useEffect(() => {
+    void loadUpds();
+  }, []);
 
   function getMarkingCodes(): string[] {
-    return markingCodesText
+    return markingCodes
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean);
@@ -65,6 +130,14 @@ export default function UpdPage() {
         marking_codes: getMarkingCodes(),
         disable_owner_control: disableOwnerControl,
         edo_type: edoType,
+        seller_inn: sellerInn || undefined,
+        seller_kpp: sellerKpp || undefined,
+        seller_name: sellerName || undefined,
+        seller_address: sellerAddress || undefined,
+        buyer_inn: buyerInn || undefined,
+        buyer_kpp: buyerKpp || undefined,
+        buyer_name: buyerName || undefined,
+        buyer_address: buyerAddress || undefined,
       };
       const response = await apiClient.post<CreateUpdResponse>("/upd/create", payload);
       const createdId = response.data?.id ?? null;
@@ -76,6 +149,7 @@ export default function UpdPage() {
           ? `Черновик УПД создан (ID: ${String(createdId)}).`
           : "Черновик УПД успешно создан.",
       );
+      await loadUpds();
     } catch (requestError) {
       console.error("Failed to create UPD:", requestError);
       setError("Не удалось создать УПД. Проверьте данные формы.");
@@ -217,118 +291,207 @@ export default function UpdPage() {
   }
 
   return (
-    <div className="space-y-8">
-      <section>
-        <h1 className="text-2xl font-semibold text-slate-900">Документы УПД</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Формирование УПД, выбор типа ЭДО и дальнейшие действия с черновиком.
-        </p>
-      </section>
+    <div className="page-container">
+      <PageHeader
+        title="Документы УПД"
+        description="Формирование УПД, выбор типа ЭДО и дальнейшие действия с черновиком."
+      />
 
       {error ? (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <Alert variant="error" onDismiss={() => setError(null)} className="mb-6">
           {error}
-        </div>
+        </Alert>
       ) : null}
 
       {success ? (
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+        <Alert variant="success" onDismiss={() => setSuccess(null)} className="mb-6">
           {success}
-        </div>
+        </Alert>
       ) : null}
 
-      <section className="rounded-xl border border-slate-200 bg-slate-50 p-5">
-        <h2 className="text-lg font-medium text-slate-900">Создание УПД на отгрузку</h2>
-        <form className="mt-4 space-y-4" onSubmit={handleCreateUpd}>
-          <label className="flex flex-col gap-1 text-sm text-slate-700">
-            Номер документа
+      <section className="card mb-8 p-6">
+        <h2 className="text-lg font-semibold text-forest-950">Создание УПД на отгрузку</h2>
+
+        {preloadedCodesCount > 0 && (
+          <Alert variant="info" className="mt-4">
+            Загружено {preloadedCodesCount} кодов маркировки из реестра
+          </Alert>
+        )}
+
+        <form className="mt-5 space-y-5" onSubmit={handleCreateUpd}>
+          <label className="flex flex-col gap-1.5">
+            <span className="label-text">Номер документа</span>
             <input
               required
               value={documentNumber}
               onChange={(event) => setDocumentNumber(event.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-2 outline-none ring-blue-500 transition focus:ring-2"
+              className="input-field"
               placeholder="УПД-0047 от 19.04.2026"
             />
           </label>
 
-          <label className="flex flex-col gap-1 text-sm text-slate-700">
-            Коды маркировки (каждый код с новой строки)
+          <label className="flex flex-col gap-1.5">
+            <span className="label-text">Коды маркировки (каждый код с новой строки)</span>
             <textarea
               required
-              value={markingCodesText}
-              onChange={(event) => setMarkingCodesText(event.target.value)}
+              value={markingCodes}
+              onChange={(event) => setMarkingCodes(event.target.value)}
               rows={8}
-              className="resize-y rounded-lg border border-slate-300 px-3 py-2 outline-none ring-blue-500 transition focus:ring-2"
+              className="input-field resize-y font-mono text-xs !min-h-[160px] !py-3"
               placeholder={
                 "0104601234567890215ABC123DEF4567821\n0104601234567890215XYZ98765432109812"
               }
             />
           </label>
 
-          <label className="flex items-center gap-2 text-sm text-slate-700">
+          <label className="flex min-h-[44px] cursor-pointer items-center gap-3">
             <input
               type="checkbox"
               checked={disableOwnerControl}
               onChange={(event) => setDisableOwnerControl(event.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              className="checkbox-field"
             />
-            Отключить контроль владельца
+            <span className="text-sm text-sage-700">Отключить контроль владельца</span>
           </label>
 
-          <fieldset className="space-y-2">
-            <legend className="text-sm font-medium text-slate-700">Тип ЭДО</legend>
-            <label className="flex items-center gap-2 text-sm text-slate-700">
+          <fieldset className="space-y-3 rounded-xl border border-forest-100 bg-forest-50/40 p-4">
+            <legend className="px-1 text-sm font-semibold text-forest-900">Тип ЭДО</legend>
+            <label className="flex min-h-[44px] cursor-pointer items-center gap-3">
               <input
                 type="radio"
                 name="edoType"
                 value="edo_lite"
                 checked={edoType === "edo_lite"}
                 onChange={() => setEdoType("edo_lite")}
-                className="h-4 w-4 border-slate-300 text-blue-600 focus:ring-blue-500"
+                className="h-4 w-4 border-sage-300 text-forest-700 focus:ring-forest-500"
               />
-              ЭДО Лайт
+              <span className="text-sm text-sage-700">ЭДО Лайт</span>
             </label>
-            <label className="flex items-center gap-2 text-sm text-slate-700">
+            <label className="flex min-h-[44px] cursor-pointer items-center gap-3">
               <input
                 type="radio"
                 name="edoType"
                 value="commercial_edo"
                 checked={edoType === "commercial_edo"}
                 onChange={() => setEdoType("commercial_edo")}
-                className="h-4 w-4 border-slate-300 text-blue-600 focus:ring-blue-500"
+                className="h-4 w-4 border-sage-300 text-forest-700 focus:ring-forest-500"
               />
-              Коммерческое ЭДО
+              <span className="text-sm text-sage-700">Коммерческое ЭДО</span>
             </label>
           </fieldset>
 
-          <button
-            type="submit"
-            disabled={isCreating}
-            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
-          >
+          <div className="rounded-xl border border-forest-100 bg-white p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-forest-900">Продавец</h3>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="flex flex-col gap-1.5">
+                <span className="label-text">ИНН</span>
+                <input
+                  type="text"
+                  value={sellerInn}
+                  onChange={(e) => setSellerInn(e.target.value)}
+                  placeholder="10 или 12 цифр"
+                  className="input-field"
+                />
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="label-text">КПП</span>
+                <input
+                  type="text"
+                  value={sellerKpp}
+                  onChange={(e) => setSellerKpp(e.target.value)}
+                  placeholder="9 цифр"
+                  className="input-field"
+                />
+              </label>
+            </div>
+            <label className="flex flex-col gap-1.5">
+              <span className="label-text">Наименование организации</span>
+              <input
+                type="text"
+                value={sellerName}
+                onChange={(e) => setSellerName(e.target.value)}
+                className="input-field"
+              />
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="label-text">Адрес</span>
+              <input
+                type="text"
+                value={sellerAddress}
+                onChange={(e) => setSellerAddress(e.target.value)}
+                className="input-field"
+              />
+            </label>
+          </div>
+
+          <div className="rounded-xl border border-forest-100 bg-white p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-forest-900">Покупатель</h3>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="flex flex-col gap-1.5">
+                <span className="label-text">ИНН</span>
+                <input
+                  type="text"
+                  value={buyerInn}
+                  onChange={(e) => setBuyerInn(e.target.value)}
+                  placeholder="10 или 12 цифр"
+                  className="input-field"
+                />
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="label-text">КПП</span>
+                <input
+                  type="text"
+                  value={buyerKpp}
+                  onChange={(e) => setBuyerKpp(e.target.value)}
+                  placeholder="9 цифр"
+                  className="input-field"
+                />
+              </label>
+            </div>
+            <label className="flex flex-col gap-1.5">
+              <span className="label-text">Наименование организации</span>
+              <input
+                type="text"
+                value={buyerName}
+                onChange={(e) => setBuyerName(e.target.value)}
+                className="input-field"
+              />
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="label-text">Адрес</span>
+              <input
+                type="text"
+                value={buyerAddress}
+                onChange={(e) => setBuyerAddress(e.target.value)}
+                className="input-field"
+              />
+            </label>
+          </div>
+
+          <button type="submit" disabled={isCreating} className="btn-primary">
             {isCreating ? <Loader2 size={16} className="animate-spin" /> : null}
             Создать УПД на отгрузку
           </button>
         </form>
       </section>
 
-      <section className="rounded-xl border border-slate-200 bg-white p-5">
-        <h2 className="text-lg font-medium text-slate-900">Дальнейшие действия</h2>
+      <section className="card mb-8 p-6">
+        <h2 className="text-lg font-semibold text-forest-950">Дальнейшие действия</h2>
         {draftId ? (
-          <p className="mt-1 text-sm text-slate-500">Активный черновик: {String(draftId)}</p>
+          <p className="mt-1 text-sm text-sage-600">Активный черновик: {String(draftId)}</p>
         ) : (
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="mt-1 text-sm text-sage-600">
             После создания УПД выберите дальнейшее действие.
           </p>
         )}
 
-        <div className="mt-4">
+        <div className="mt-5">
           {edoType === "edo_lite" ? (
             <button
               type="button"
               onClick={() => void handleSignAndSend()}
               disabled={isPluginChecking || isCertificatesLoading || isSigning}
-              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+              className="btn-accent"
             >
               {isPluginChecking || isCertificatesLoading ? (
                 <Loader2 size={16} className="animate-spin" />
@@ -336,23 +499,19 @@ export default function UpdPage() {
               Подписать и отправить
             </button>
           ) : (
-            <button
-              type="button"
-              onClick={() => void handleSaveDraftXml()}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
-            >
+            <button type="button" onClick={() => void handleSaveDraftXml()} className="btn-secondary">
               Сохранить черновик в XML
             </button>
           )}
         </div>
 
         {edoType === "edo_lite" && certificates.length > 0 ? (
-          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
-            <p className="text-sm font-medium text-slate-800">Выберите сертификат для подписи</p>
+          <div className="card-muted mt-5 p-5">
+            <p className="text-sm font-semibold text-forest-900">Выберите сертификат для подписи</p>
             <select
               value={selectedThumbprint}
               onChange={(event) => setSelectedThumbprint(event.target.value)}
-              className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-blue-500 transition focus:ring-2"
+              className="select-field mt-3"
             >
               {certificates.map((certificate) => (
                 <option key={certificate.thumbprint} value={certificate.thumbprint}>
@@ -360,7 +519,7 @@ export default function UpdPage() {
                 </option>
               ))}
             </select>
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-2 text-xs text-sage-500">
               Отпечаток:{" "}
               {certificates.find((certificate) => certificate.thumbprint === selectedThumbprint)
                 ?.thumbprint ?? "не выбран"}
@@ -369,7 +528,7 @@ export default function UpdPage() {
               type="button"
               onClick={() => void handleConfirmSigning()}
               disabled={isSigning || !selectedThumbprint}
-              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+              className="btn-primary mt-4"
             >
               {isSigning ? <Loader2 size={16} className="animate-spin" /> : null}
               Подтвердить подписание
@@ -377,6 +536,60 @@ export default function UpdPage() {
           </div>
         ) : null}
       </section>
+
+      {upds.length > 0 && (
+        <section>
+          <h3 className="mb-4 text-lg font-semibold text-forest-950">Документы УПД</h3>
+          <div className="table-container">
+            <table className="table-base">
+              <thead>
+                <tr>
+                  <th>Номер</th>
+                  <th>Статус</th>
+                  <th>Кодов</th>
+                  <th>Дата</th>
+                  <th>Действия</th>
+                </tr>
+              </thead>
+              <tbody>
+                {upds.map((upd) => (
+                  <tr key={upd.id}>
+                    <td>{upd.document_number}</td>
+                    <td>
+                      <span
+                        className={
+                          upd.status === "sent"
+                            ? "badge-published"
+                            : upd.status === "signed"
+                              ? "badge-info"
+                              : "badge-draft"
+                        }
+                      >
+                        {upd.status === "sent"
+                          ? "Отправлен"
+                          : upd.status === "signed"
+                            ? "Подписан"
+                            : "Черновик"}
+                      </span>
+                    </td>
+                    <td>{upd.marking_codes?.length ?? 0}</td>
+                    <td>{new Date(upd.created_at).toLocaleDateString("ru-RU")}</td>
+                    <td>
+                      <a
+                        href={`/api/v1/upd/${upd.id}/download-xml`}
+                        download
+                        className="text-sm font-medium text-forest-700 hover:text-forest-900 hover:underline"
+                      >
+                        Скачать XML
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

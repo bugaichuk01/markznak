@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -13,12 +14,21 @@ from models import Device, DocumentUPD, EmissionOrder, EmissionOrderStatus, Prod
 from schemas import EmissionOrderCreate
 from services.suz_integration_service import (
     SuzIntegrationError,
+    build_suz_close_order_body,
     build_suz_create_order_body,
+    close_suz_order,
+    dumps_suz_request_body,
+    fetch_suz_order_codes,
     fetch_suz_orders_raw,
     map_suz_status_to_emission,
+    release_method_options_for_gtin,
     submit_suz_emission_order,
 )
+from services.token_service import get_active_token
+from services.utilisation_service import normalize_codes_for_utilisation
 from settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 _SUZ_TRANSPORT_DIAG_HINT = (
     " Подробнее (TLS/DNS, без вашего clientToken): GET /api/v1/emission-orders/diagnostics/connectivity."
@@ -62,15 +72,29 @@ async def _resolve_product_card_by_gtin(db: AsyncSession, gtin: str | None) -> P
     return cards[0] if cards else None
 
 
+async def _get_suz_token(db: AsyncSession) -> str | None:
+    """Актуальный clientToken: БД → кэш → .env."""
+    return await get_active_token(db)
+
+
 async def _resolve_oms_for_suz(db: AsyncSession) -> str:
     settings = get_settings()
     oms = (settings.suz_oms_id or "").strip()
-    if not oms:
-        dev_result = await db.scalars(select(Device).order_by(Device.created_at.asc()).limit(1))
-        device = dev_result.first()
-        if device:
-            oms = device.oms_id.strip()
-    return oms
+    if oms:
+        return oms
+
+    dev_result = await db.scalars(select(Device).order_by(Device.created_at.asc()).limit(1))
+    device = dev_result.first()
+    if device:
+        oms = device.oms_id.strip()
+        if oms:
+            logger.debug("_resolve_oms_for_suz: omsId из устройства в БД: %s", oms)
+            return oms
+
+    logger.warning(
+        "_resolve_oms_for_suz: omsId не найден ни в SUZ_OMS_ID, ни в таблице devices"
+    )
+    return (settings.suz_oms_id or "").strip()
 
 
 async def create_order(data: EmissionOrderCreate, db: AsyncSession) -> EmissionOrder:
@@ -114,6 +138,47 @@ async def list_marking_codes_for_print(db: AsyncSession) -> list[str]:
             if s:
                 seen.setdefault(s, None)
     return sorted(seen.keys())
+
+
+async def list_all_marking_codes(
+    db: AsyncSession,
+    gtin: str | None = None,
+    order_id: str | None = None,
+    search: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    orders = (
+        await db.scalars(
+            select(EmissionOrder).order_by(EmissionOrder.created_at.desc())
+        )
+    ).all()
+
+    items = []
+    for order in orders:
+        if not order.suz_marking_codes:
+            continue
+        if order_id and str(order.id) != order_id:
+            continue
+        if gtin and order.gtin != gtin:
+            continue
+        for code in order.suz_marking_codes:
+            if search and search.lower() not in code.lower():
+                continue
+            items.append({
+                "code": code,
+                "gtin": order.gtin,
+                "order_id": str(order.id),
+                "suz_order_id": order.suz_order_id,
+                "quantity_total": len(order.suz_marking_codes),
+                "created_at": order.created_at,
+            })
+
+    total = len(items)
+    return {
+        "items": items[offset : offset + limit],
+        "total": total,
+    }
 
 
 async def update_order_status(order_id: UUID, status_value: str, db: AsyncSession) -> EmissionOrder:
@@ -187,10 +252,15 @@ async def merge_orders(order_ids: list[UUID], db: AsyncSession) -> EmissionOrder
 async def sync_orders_from_suz(db: AsyncSession) -> dict[str, int]:
     """Подтягивает заказы из API СУЗ (OMS v2) и upsert в БД по suz_order_id."""
     oms = await _resolve_oms_for_suz(db)
+    token = await _get_suz_token(db)
 
     try:
-        rows, _url = await fetch_suz_orders_raw(oms_id=oms if oms else None)
+        rows, _url = await fetch_suz_orders_raw(
+            oms_id=oms if oms else None,
+            token_override=token,
+        )
     except SuzIntegrationError as exc:
+        logger.error("sync_orders_from_suz: СУЗ вернул ошибку: %s", exc, exc_info=True)
         hint = _SUZ_TRANSPORT_DIAG_HINT if exc.suggest_transport_diagnostics else ""
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
@@ -203,7 +273,9 @@ async def sync_orders_from_suz(db: AsyncSession) -> dict[str, int]:
         suz_oid = row["order_id"]
         gtin: str | None = row.get("gtin")
         qty = int(row["quantity"])
-        st = EmissionOrderStatus(map_suz_status_to_emission(row.get("status_raw") or ""))
+        st = EmissionOrderStatus(
+            row.get("emission_status") or map_suz_status_to_emission(row.get("status_raw") or "")
+        )
         card = await _resolve_product_card_by_gtin(db, gtin)
         raw_codes = row.get("marking_codes")
         suz_codes: list[str] = (
@@ -220,7 +292,7 @@ async def sync_orders_from_suz(db: AsyncSession) -> dict[str, int]:
             if card:
                 existing.product_card_id = card.id
             if suz_codes:
-                existing.suz_marking_codes = suz_codes
+                existing.suz_marking_codes = normalize_codes_for_utilisation(suz_codes)
             updated += 1
         else:
             db.add(
@@ -230,7 +302,7 @@ async def sync_orders_from_suz(db: AsyncSession) -> dict[str, int]:
                     quantity=qty,
                     status=st,
                     suz_order_id=suz_oid,
-                    suz_marking_codes=suz_codes,
+                    suz_marking_codes=normalize_codes_for_utilisation(suz_codes),
                 )
             )
             inserted += 1
@@ -266,8 +338,123 @@ async def patch_order_gtin(order_id: UUID, gtin_plain: str, db: AsyncSession) ->
     return order
 
 
-async def send_order_to_suz(order_id: UUID, db: AsyncSession) -> tuple[EmissionOrder, str, dict[str, Any]]:
-    """Создаёт заказ эмиссии в СУЗ (POST OMS API v2), сохраняет suz_order_id и переводит в pending."""
+async def _resolve_order_gtin_and_oms(
+    order: EmissionOrder,
+    db: AsyncSession,
+) -> tuple[str, str]:
+    gtin_raw: str | None = order.gtin.strip() if (order.gtin and str(order.gtin).strip()) else None
+    if not gtin_raw and order.product_card_id:
+        card = await db.get(ProductCard, order.product_card_id)
+        if card is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Карточка товара для заказа не найдена")
+        gtin_raw = card.gtin.strip() if card.gtin else None
+
+    gtin14 = _normalize_gtin14_for_suz(gtin_raw)
+    if not gtin14:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Для отправки в СУЗ нужен корректный GTIN (14 цифр).",
+        )
+
+    oms = await _resolve_oms_for_suz(db)
+    if not oms.strip():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Не задан OMS ID: укажите SUZ_OMS_ID в .env или добавьте устройство.",
+        )
+    return gtin14, oms.strip()
+
+
+async def prepare_suz_order_send_payload(
+    order_id: UUID,
+    db: AsyncSession,
+    *,
+    release_method_type: str | None = None,
+    producer: str | None = None,
+) -> dict[str, Any]:
+    """Тело POST /api/v3/order для подписи в браузере (X-Signature)."""
+    order = await db.get(EmissionOrder, order_id)
+    if order is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Заказ на эмиссию не найден")
+
+    gtin14, _oms = await _resolve_order_gtin_and_oms(order, db)
+    settings = get_settings()
+    default_rmt, allowed = release_method_options_for_gtin(gtin14)
+    body = build_suz_create_order_body(
+        settings,
+        product_group=settings.suz_product_group or "perfumery",
+        gtin14=gtin14,
+        quantity=int(order.quantity),
+        production_order_id=None,
+        release_method_type=release_method_type or default_rmt,
+        producer=producer,
+    )
+    rmt = str(body.get("attributes", {}).get("releaseMethodType", default_rmt))
+    return {
+        "body": body,
+        "body_string": dumps_suz_request_body(body),
+        "release_method_type": rmt,
+        "allowed_release_method_types": allowed,
+        "gtin": gtin14,
+    }
+
+
+async def create_suz_order_via_proxy(
+    *,
+    body_string: str,
+    signature: str,
+    db: AsyncSession,
+    local_order_id: UUID | None = None,
+) -> tuple[EmissionOrder | None, str, dict[str, Any]]:
+    """Прокси в СУЗ (без подписи на сервере); при local_order_id обновляет локальный черновик."""
+    if local_order_id is not None:
+        order = await db.get(EmissionOrder, local_order_id)
+        if order is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Локальный заказ не найден")
+        if order.suz_order_id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="Заказ уже отправлен в СУЗ.",
+            )
+
+    oms = await _resolve_oms_for_suz(db)
+    if not oms.strip():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Не задан OMS ID: укажите SUZ_OMS_ID в .env или добавьте устройство.",
+        )
+    token = await _get_suz_token(db)
+    try:
+        remote_oid, payload = await submit_suz_emission_order(
+            oms_id=oms.strip(),
+            body_string=body_string,
+            x_signature=signature,
+            token_override=token,
+        )
+    except SuzIntegrationError as exc:
+        hint = _SUZ_TRANSPORT_DIAG_HINT if exc.suggest_transport_diagnostics else ""
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"{exc}{hint}") from exc
+
+    order: EmissionOrder | None = None
+    if local_order_id is not None:
+        order = await db.get(EmissionOrder, local_order_id)
+        assert order is not None
+        order.suz_order_id = remote_oid
+        order.status = EmissionOrderStatus.PENDING
+        await db.commit()
+        await db.refresh(order)
+
+    return order, remote_oid, payload
+
+
+async def send_order_to_suz(
+    order_id: UUID,
+    db: AsyncSession,
+    *,
+    body_string: str,
+    signature: str,
+) -> tuple[EmissionOrder, str, dict[str, Any]]:
+    """Проксирует в СУЗ уже подписанное на фронте тело (cadesplugin)."""
     order = await db.get(EmissionOrder, order_id)
     if order is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Заказ на эмиссию не найден")
@@ -283,39 +470,22 @@ async def send_order_to_suz(order_id: UUID, db: AsyncSession) -> tuple[EmissionO
             detail='Отправить в СУЗ можно только заказ со статусом «создан» (created).',
         )
 
-    gtin_raw: str | None = order.gtin.strip() if (order.gtin and str(order.gtin).strip()) else None
-    if not gtin_raw and order.product_card_id:
-        card = await db.get(ProductCard, order.product_card_id)
-        if card is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Карточка товара для заказа не найдена")
-        gtin_raw = card.gtin.strip() if card.gtin else None
+    _gtin14, oms = await _resolve_order_gtin_and_oms(order, db)
 
-    gtin14 = _normalize_gtin14_for_suz(gtin_raw)
-    if not gtin14:
+    if not (body_string or "").strip():
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            detail="Для отправки в СУЗ нужен корректный GTIN.",
+            detail="Нужно body_string — та же строка JSON, которую подписали в браузере.",
         )
 
-    oms = await _resolve_oms_for_suz(db)
-    if not oms.strip():
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail="Не задан OMS ID: укажите SUZ_OMS_ID в .env или добавьте устройство.",
-        )
-
-    settings = get_settings()
-    prod_id = str(uuid4())
-    body = build_suz_create_order_body(
-        settings,
-        product_group=settings.suz_product_group or "perfum",
-        gtin14=gtin14,
-        quantity=int(order.quantity),
-        production_order_id=prod_id,
-    )
-
+    token = await _get_suz_token(db)
     try:
-        remote_oid, payload = await submit_suz_emission_order(oms_id=oms.strip(), json_body=body)
+        remote_oid, payload = await submit_suz_emission_order(
+            oms_id=oms,
+            body_string=body_string,
+            x_signature=signature,
+            token_override=token,
+        )
     except SuzIntegrationError as exc:
         hint = _SUZ_TRANSPORT_DIAG_HINT if exc.suggest_transport_diagnostics else ""
         raise HTTPException(
@@ -323,9 +493,94 @@ async def send_order_to_suz(order_id: UUID, db: AsyncSession) -> tuple[EmissionO
             detail=f"{exc}{hint}",
         ) from exc
 
-    order.gtin = gtin14
+    order.gtin = _gtin14
     order.suz_order_id = remote_oid
     order.status = EmissionOrderStatus.PENDING
     await db.commit()
     await db.refresh(order)
     return order, remote_oid, payload
+
+
+async def download_order_codes(
+    order_id: UUID,
+    db: AsyncSession,
+) -> tuple[EmissionOrder, list[str]]:
+    order = await db.get(EmissionOrder, order_id)
+    if order is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
+    if not order.suz_order_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Заказ ещё не отправлен в СУЗ")
+    if not order.gtin:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="GTIN не указан")
+    if order.status not in (EmissionOrderStatus.AVAILABLE,):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"Заказ в статусе {order.status.value}, скачивание недоступно",
+        )
+
+    all_codes: list[str] = []
+    last_block_id = 0
+    token = await _get_suz_token(db)
+
+    while True:
+        try:
+            block = await fetch_suz_order_codes(
+                order_id=order.suz_order_id,
+                gtin=order.gtin,
+                quantity=min(150_000, int(order.quantity)),
+                last_block_id=last_block_id,
+                token_override=token,
+            )
+        except SuzIntegrationError as e:
+            if "3390" in str(e) or "EXHAUSTED" in str(e):
+                order.status = EmissionOrderStatus.EXHAUSTED
+                await db.commit()
+                await db.refresh(order)
+                return order, list(order.suz_marking_codes or [])
+            raise
+        if not block:
+            break
+        all_codes.extend(block)
+        last_block_id += 1
+        if len(all_codes) >= int(order.quantity):
+            break
+
+    existing = set(order.suz_marking_codes or [])
+    merged = list(existing | set(all_codes))
+    order.suz_marking_codes = normalize_codes_for_utilisation(merged)
+
+    if len(merged) >= int(order.quantity):
+        order.status = EmissionOrderStatus.EXHAUSTED
+
+    await db.commit()
+    await db.refresh(order)
+    return order, merged
+
+
+async def close_order(
+    order_id: UUID,
+    db: AsyncSession,
+    *,
+    signature: str,
+) -> EmissionOrder:
+    order = await db.get(EmissionOrder, order_id)
+    if order is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
+    if not order.suz_order_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Заказ не отправлен в СУЗ")
+
+    body_string = dumps_suz_request_body(build_suz_close_order_body(order.suz_order_id))
+    token = await _get_suz_token(db)
+    try:
+        await close_suz_order(
+            body_string=body_string,
+            x_signature=signature,
+            token_override=token,
+        )
+    except SuzIntegrationError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    order.status = EmissionOrderStatus.CLOSED
+    await db.commit()
+    await db.refresh(order)
+    return order

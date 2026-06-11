@@ -26,10 +26,12 @@ class ProductCardStatus(StrEnum):
 
 
 class EmissionOrderStatus(StrEnum):
-    CREATED = "created"
-    PENDING = "pending"
-    AVAILABLE = "available"
-    REJECTED = "rejected"
+    CREATED = "created"      # локальный черновик
+    PENDING = "pending"      # В обработке (СУЗ обрабатывает)
+    AVAILABLE = "available"  # Готов — можно скачать КМ
+    EXHAUSTED = "exhausted"  # Не содержит больше кодов (скачан)
+    CLOSED = "closed"        # Закрыт (после close API)
+    REJECTED = "rejected"    # Отклонён / ошибка
 
 
 def _enum_values(enum_cls: type[StrEnum]) -> list[str]:
@@ -49,6 +51,7 @@ class Device(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     oms_id: Mapped[str] = mapped_column(String(255), nullable=False)
     connection_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    inn: Mapped[str | None] = mapped_column(String(12), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -125,10 +128,46 @@ class DocumentUPD(Base):
     external_message_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     external_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     external_response_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    seller_inn: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    seller_kpp: Mapped[str | None] = mapped_column(String(9), nullable=True)
+    seller_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    seller_address: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    buyer_inn: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    buyer_kpp: Mapped[str | None] = mapped_column(String(9), nullable=True)
+    buyer_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    buyer_address: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+
+
+class SuzToken(Base):
+    """Хранение clientToken СУЗ с временем истечения."""
+
+    __tablename__ = "suz_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    oms_connection_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    true_api_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    true_api_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -165,6 +204,22 @@ class ProductCard(Base):
     national_catalog_feed_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     national_catalog_feed_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     national_catalog_feed_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    brand: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    color: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    size: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    size_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    composition: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    gender: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    product_kind: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    regulation: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    tn_ved_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    tn_ved_group: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    model_article_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_article: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    custom_name: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_set: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    extra_attrs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -209,6 +264,115 @@ class EmissionOrder(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class GtinExtraFields(Base):
+    """Дополнительные поля к GTIN для печати этикеток и УПД."""
+
+    __tablename__ = "gtin_extra_fields"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    gtin: Mapped[str] = mapped_column(String(14), nullable=False, unique=True, index=True)
+    name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    article: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    size: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    color: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    barcode: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    brand: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    composition: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    edo_inn: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    edo_kpp: Mapped[str | None] = mapped_column(String(9), nullable=True)
+    edo_address: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    extra: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class UtilisationStatus(StrEnum):
+    DRAFT = "draft"
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    ERROR = "error"
+
+
+class UtilisationReport(Base):
+    """Отчёт о нанесении КМ (ввод в оборот)."""
+
+    __tablename__ = "utilisation_reports"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    product_group: Mapped[str] = mapped_column(String(64), nullable=False, default="perfumery")
+    marking_codes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[UtilisationStatus] = mapped_column(
+        Enum(UtilisationStatus, name="utilisation_status", values_callable=_enum_values),
+        nullable=False,
+        default=UtilisationStatus.DRAFT,
+    )
+    report_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signature_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WithdrawalStatus(StrEnum):
+    DRAFT = "draft"
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    ERROR = "error"
+
+
+class WithdrawalReport(Base):
+    """Отчёт о выводе КМ из оборота."""
+
+    __tablename__ = "withdrawal_reports"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    withdrawal_type: Mapped[str] = mapped_column(String(64), nullable=False, default="SOLD")
+    product_group: Mapped[str] = mapped_column(String(64), nullable=False, default="perfumery")
+    marking_codes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[WithdrawalStatus] = mapped_column(
+        Enum(WithdrawalStatus, name="withdrawal_status", values_callable=_enum_values),
+        nullable=False,
+        default=WithdrawalStatus.DRAFT,
+    )
+    document_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signature_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class LabelTemplate(Base):

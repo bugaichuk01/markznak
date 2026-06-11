@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
-from models import ProductCard
+from models import ProductCard, ProductCardType
 from settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class NationalCatalogIntegrationError(RuntimeError):
@@ -111,6 +115,48 @@ async def _fetch_required_attrs(
     raise NationalCatalogIntegrationError(details)
 
 
+async def _fetch_optional_attrs(
+    client: httpx.AsyncClient,
+    send_url: str,
+    auth_params: dict[str, str],
+    headers: dict[str, str],
+    tnved: str,
+    cat_id: int | None,
+    active_cat_ids: list[int],
+) -> list[dict[str, Any]]:
+    """
+    Возвращает необязательные атрибуты НК.
+
+    В боевом контуре — attr_type=o, в sandbox — attr_type=r (recommended).
+    """
+    base_url = f"{_extract_base_url(send_url)}/v3/attributes"
+    cat_attempts: list[int | None] = []
+    if cat_id:
+        cat_attempts.append(cat_id)
+    else:
+        cat_attempts.extend(active_cat_ids)
+    cat_attempts.append(None)
+
+    for attr_type in ("o", "r"):
+        for cid in cat_attempts:
+            query: dict[str, Any] = {"attr_type": attr_type}
+            if cid is not None:
+                query["cat_id"] = cid
+            else:
+                query["tnved"] = tnved
+
+            response = await client.get(base_url, params={**auth_params, **query}, headers=headers)
+            if response.status_code != 200:
+                continue
+
+            payload = _serialize_response(response)
+            result = payload.get("result")
+            if isinstance(result, list) and result:
+                return result
+
+    return []
+
+
 async def _fetch_categories_by_tnved(
     client: httpx.AsyncClient,
     send_url: str,
@@ -197,9 +243,53 @@ def _pick_attr_value_type(attr: dict[str, Any], fallback: str = "") -> str:
     return fallback
 
 
+def _parse_nk_attr_values(raw: Any) -> dict[int, str]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[int, str] = {}
+    for key, value in raw.items():
+        if not str(key).isdigit() or value is None:
+            continue
+        if isinstance(value, list):
+            text = "; ".join(str(v).strip() for v in value if str(v).strip())
+        else:
+            text = str(value).strip()
+        if text:
+            out[int(key)] = text
+    return out
+
+
+def _user_nk_attrs(card: ProductCard) -> dict[int, str]:
+    """Значения обязательных атрибутов НК, заполненные пользователем в форме."""
+    if not card.extra_attrs or not isinstance(card.extra_attrs, dict):
+        return {}
+    return _parse_nk_attr_values(card.extra_attrs.get("nk_attrs"))
+
+
+def _user_nk_optional_attrs(card: ProductCard) -> dict[int, str]:
+    """Значения необязательных атрибутов НК, заполненные пользователем в форме."""
+    if not card.extra_attrs or not isinstance(card.extra_attrs, dict):
+        return {}
+    return _parse_nk_attr_values(card.extra_attrs.get("nk_optional_attrs"))
+
+
+def _append_user_attr(
+    attrs: list[dict[str, Any]],
+    attr: dict[str, Any],
+    attr_id: int,
+    value: str,
+) -> None:
+    entry: dict[str, Any] = {"attr_id": attr_id, "attr_value": value}
+    value_type = _pick_attr_value_type(attr, "")
+    if value_type:
+        entry["attr_value_type"] = value_type
+    attrs.append(entry)
+
+
 def _build_required_attrs(card: ProductCard, required_attrs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[int]]:
     attrs: list[dict[str, Any]] = []
     unresolved: list[int] = []
+    user_attrs = _user_nk_attrs(card)
 
     for attr in required_attrs:
         if not isinstance(attr, dict):
@@ -210,10 +300,15 @@ def _build_required_attrs(card: ProductCard, required_attrs: list[dict[str, Any]
         attr_id = int(raw_id)
         presets = attr.get("attr_preset") if isinstance(attr.get("attr_preset"), list) else []
 
+        if attr_id in user_attrs:
+            _append_user_attr(attrs, attr, attr_id, user_attrs[attr_id])
+            continue
+
         if attr_id == 2478:  # Полное наименование товара
             attrs.append({"attr_id": attr_id, "attr_value": card.name})
         elif attr_id == 2504:  # Товарный знак
-            attrs.append({"attr_id": attr_id, "attr_value": "NO_BRAND"})
+            brand_value = (card.brand or "").strip() or "NO_BRAND"
+            attrs.append({"attr_id": attr_id, "attr_value": brand_value})
         elif attr_id == 3959:  # Группа ТНВЭД
             attrs.append({"attr_id": attr_id, "attr_value": card.tn_ved[:4]})
         elif attr_id == 13933:  # Код ТНВЭД (10 знаков, лучше из пресета)
@@ -271,22 +366,31 @@ def _build_entry_variants(
     required_attrs: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     required_built_attrs, _ = _build_required_attrs(card, required_attrs)
+    built_ids = {a["attr_id"] for a in required_built_attrs}
+    for attr_id, value in _user_nk_optional_attrs(card).items():
+        if attr_id not in built_ids:
+            required_built_attrs.append({"attr_id": attr_id, "attr_value": value})
 
+    brand_value = (card.brand or "").strip() or "NO_BRAND"
     base_payload: dict[str, Any] = {
         "good_name": card.name,
         "tnved": card.tn_ved,
-        "brand": "NO_BRAND",
+        "brand": brand_value,
         "good_attrs": required_built_attrs,
     }
 
     variants: list[dict[str, Any]] = []
-    if card.gtin:
+    gtin = (card.gtin or "").strip()
+    card_type = card.type.value if hasattr(card.type, "value") else str(card.type)
+    is_tech_card = card_type == ProductCardType.TECH_CARD.value
+
+    if gtin and not is_tech_card:
         gtin_payload = {
             **base_payload,
-            "gtin": card.gtin,
+            "gtin": gtin,
             "identified_by": [
                 {
-                    "value": card.gtin,
+                    "value": gtin,
                     "type": "gtin",
                     "multiplier": 1,
                     "level": "trade-unit",
@@ -298,14 +402,17 @@ def _build_entry_variants(
             variants.append({**gtin_payload, "categories": [cat_id]})
             variants.append({**gtin_payload, "categories": [{"cat_id": cat_id}]})
         variants.append(gtin_payload)
-        return variants
+    elif is_tech_card:
+        tech_payload = {**base_payload, "is_tech_gtin": 1}
+        if cat_id:
+            variants.append({**tech_payload, "categories": [cat_id]})
+            variants.append({**tech_payload, "categories": [{"cat_id": cat_id}]})
+        variants.append(tech_payload)
+    else:
+        raise NationalCatalogIntegrationError(
+            "Для типа «Единица товара», «Комплект» или «Набор» необходимо указать GTIN."
+        )
 
-    # Для техкарточек в НК часто ожидают числовой флаг.
-    tech_payload = {**base_payload, "is_tech_gtin": 1}
-    if cat_id:
-        variants.append({**tech_payload, "categories": [cat_id]})
-        variants.append({**tech_payload, "categories": [{"cat_id": cat_id}]})
-    variants.append(tech_payload)
     return variants
 
 
@@ -412,11 +519,22 @@ async def send_product_card(card: ProductCard, cat_id: int | None = None) -> Nat
                 for request_body in _build_request_bodies(entry):
                     variant_idx += 1
                     try:
+                        logger.info(
+                            "send_product_card: POST в НК — url=%s, params=%s, body=%s",
+                            settings.national_catalog_send_url,
+                            json.dumps(feed_params, ensure_ascii=False, default=str),
+                            json.dumps(request_body, ensure_ascii=False, default=str),
+                        )
                         response = await client.post(
                             settings.national_catalog_send_url,
                             params=feed_params,
                             json=request_body,
                             headers=headers,
+                        )
+                        logger.info(
+                            "send_product_card: ответ НК — status=%s, body=%s",
+                            response.status_code,
+                            json.dumps(_serialize_response(response), ensure_ascii=False, default=str),
                         )
                         if response.status_code in {200, 201, 202}:
                             break

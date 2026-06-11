@@ -1,72 +1,223 @@
-import type { LucideIcon } from "lucide-react";
-import { Box, CircleDashed, FileText, Package, Printer, Settings, ShoppingCart } from "lucide-react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { useEffect, useState } from "react";
+import apiClient from "../api/client";
+import {
+  ArrowDownCircle,
+  ArrowUpCircle,
+  FileText,
+  Layers,
+  Menu,
+  Package,
+  Printer,
+  ScanLine,
+  Settings,
+  ShoppingBag,
+  Sparkles,
+  X,
+} from "lucide-react";
+import { OrganicBlob } from "./ui/FloralDecor";
 
-type MenuItem =
-  | { to: string; label: string; icon: LucideIcon }
-  | { label: string; icon: LucideIcon; disabled: true };
+const primaryNav = [
+  { path: "/catalog", label: "Национальный каталог", icon: Layers, shortLabel: "Каталог" },
+  { path: "/orders", label: "Управление заказами", icon: Package, shortLabel: "Заказы" },
+  { path: "/labels", label: "Печать этикеток", icon: Printer, shortLabel: "Этикетки" },
+  { path: "/codes", label: "Операции с КИЗами", icon: ScanLine, shortLabel: "КИЗы" },
+];
 
-const menuItems: MenuItem[] = [
-  { to: "/settings", label: "Настройки ЧЗ", icon: Settings },
-  { to: "/catalog", label: "Национальный каталог", icon: Box },
-  { to: "/orders", label: "Заказы СУЗ", icon: ShoppingCart },
-  { to: "/labels", label: "Печать этикеток", icon: Printer },
-  { label: "Введение в оборот", icon: CircleDashed, disabled: true },
-  { to: "/upd", label: "Документы УПД", icon: FileText },
-  { to: "/products", label: "Товары и Ozon", icon: Package },
+const secondaryNav = [
+  { path: "/utilisation", label: "Ввод в оборот", icon: ArrowUpCircle },
+  { path: "/withdrawal", label: "Вывод из оборота", icon: ArrowDownCircle },
+  { path: "/upd", label: "Документы УПД", icon: FileText },
+  { path: "/extra-fields", label: "Доп. поля", icon: Sparkles },
+  { path: "/products", label: "Товары и Ozon", icon: ShoppingBag },
+  { path: "/settings", label: "Настройки ЧЗ", icon: Settings },
 ];
 
 export default function Layout() {
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [globalError, setGlobalError] = useState<string | null>(null);
+  const location = useLocation();
+
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [mobileOpen]);
+
+  useEffect(() => {
+    const interceptor = apiClient.interceptors.response.use(
+      (res) => res,
+      (err) => {
+        const msg = err?.response?.data?.detail;
+        if (msg && typeof msg === "string") {
+          setGlobalError(msg);
+          setTimeout(() => setGlobalError(null), 8000);
+        }
+        return Promise.reject(err);
+      },
+    );
+    return () => apiClient.interceptors.response.eject(interceptor);
+  }, []);
+
+  const navLinkClass = ({ isActive }: { isActive: boolean }) =>
+    isActive ? "nav-link-active" : "nav-link";
+
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 print:min-h-0 print:bg-white">
-      <aside className="fixed inset-y-0 left-0 w-64 border-r border-slate-200 bg-white p-4 shadow-sm print:hidden">
-        <div className="mb-6 px-2">
-          <p className="text-xs uppercase tracking-wide text-slate-500">Знак</p>
-          <p className="text-lg font-semibold">Панель управления</p>
+    <div className="relative min-h-screen bg-surface-muted print:min-h-0">
+      <OrganicBlob className="-left-32 -top-32 hidden bg-forest-200/25 lg:block" />
+      <OrganicBlob className="-right-24 top-1/3 hidden bg-mint-200/15 lg:block" />
+
+      {mobileOpen ? (
+        <button
+          type="button"
+          className="fixed inset-0 z-40 bg-forest-950/20 backdrop-blur-sm lg:hidden"
+          onClick={() => setMobileOpen(false)}
+          aria-label="Закрыть меню"
+        />
+      ) : null}
+
+      <aside
+        className={`glass-panel fixed inset-y-0 left-0 z-50 flex w-[min(100vw-3rem,280px)] flex-col shadow-glass transition-transform duration-300 print:hidden lg:translate-x-0 ${
+          mobileOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <div className="relative overflow-hidden border-b border-sage-200/80 px-5 py-5">
+          <div className="absolute -right-4 -top-4 h-20 w-20 rounded-full bg-forest-100/60 blur-2xl" />
+          <div className="relative flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-forest-600 to-forest-800 shadow-soft">
+                <span className="text-xs font-bold tracking-tight text-white">GC</span>
+              </div>
+              <div>
+                <span className="block text-base font-bold tracking-tight text-sage-900">
+                  G-CODE
+                </span>
+                <span className="text-xs text-sage-500">Маркировка и Честный знак</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setMobileOpen(false)}
+              className="rounded-lg p-2 text-sage-500 hover:bg-sage-100 lg:hidden"
+              aria-label="Закрыть"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
-        <nav className="space-y-1">
-          {menuItems.map((item) => {
+        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4" aria-label="Основная навигация">
+          <p className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-wider text-sage-400">
+            Рабочие разделы
+          </p>
+          {primaryNav.map((item) => {
             const Icon = item.icon;
-            if ("disabled" in item && item.disabled) {
-              return (
-                <div
-                  key={item.label}
-                  className="flex cursor-not-allowed items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-400"
-                  title="Раздел в разработке"
-                >
-                  <Icon size={18} />
-                  <span>{item.label}</span>
-                </div>
-              );
-            }
-            const link = item as Extract<MenuItem, { to: string }>;
             return (
-              <NavLink
-                key={link.to}
-                to={link.to}
-                className={({ isActive }) =>
-                  [
-                    "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-blue-50 text-blue-700"
-                      : "text-slate-700 hover:bg-slate-100 hover:text-slate-900",
-                  ].join(" ")
-                }
-              >
-                <Icon size={18} />
-                <span>{link.label}</span>
+              <NavLink key={item.path} to={item.path} className={navLinkClass}>
+                <Icon className="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
+                <span>{item.label}</span>
+              </NavLink>
+            );
+          })}
+
+          <div className="divider my-4" />
+
+          <p className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-wider text-sage-400">
+            Дополнительно
+          </p>
+          {secondaryNav.map((item) => {
+            const Icon = item.icon;
+            return (
+              <NavLink key={item.path} to={item.path} className={navLinkClass}>
+                <Icon className="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
+                <span>{item.label}</span>
               </NavLink>
             );
           })}
         </nav>
+
+        <div className="border-t border-sage-200/80 p-4">
+          <div className="rounded-xl bg-gradient-to-br from-forest-50 to-sage-50 p-3">
+            <p className="text-xs font-medium text-forest-800">Баланс ЧЗ</p>
+            <p className="mt-0.5 text-lg font-bold text-sage-900">—</p>
+            <p className="mt-1 text-[11px] text-sage-500">Подключите API для отображения</p>
+          </div>
+        </div>
       </aside>
 
-      <main className="ml-64 p-6 print:ml-0 print:p-0">
-        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm print:rounded-none print:border-0 print:p-0 print:shadow-none">
-          <Outlet />
+      <div className="flex min-h-screen flex-col lg:pl-[280px] print:pl-0">
+        <div className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-sage-200/80 bg-white/85 px-4 backdrop-blur-xl lg:hidden print:hidden">
+          <button
+            type="button"
+            onClick={() => setMobileOpen(true)}
+            className="btn-ghost btn-sm !min-h-[40px] !px-2.5"
+            aria-label="Открыть меню"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+          <span className="text-sm font-bold tracking-tight text-sage-900">G-CODE</span>
         </div>
-      </main>
+
+        <nav
+          className="fixed bottom-0 left-0 right-0 z-30 border-t border-sage-200/80 bg-white/90 backdrop-blur-xl lg:hidden print:hidden"
+          aria-label="Мобильная навигация"
+        >
+          <div className="flex items-stretch justify-around px-1 pb-[env(safe-area-inset-bottom)]">
+            {primaryNav.map((item) => {
+              const Icon = item.icon;
+              const active = location.pathname === item.path;
+              return (
+                <NavLink
+                  key={item.path}
+                  to={item.path}
+                  className={`relative flex min-h-[56px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium transition ${
+                    active ? "text-forest-700" : "text-sage-500"
+                  }`}
+                >
+                  <Icon
+                    className={`h-5 w-5 ${active ? "text-forest-600" : ""}`}
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">{item.shortLabel}</span>
+                  {active ? (
+                    <span className="absolute bottom-1 h-0.5 w-8 rounded-full bg-forest-600" />
+                  ) : null}
+                </NavLink>
+              );
+            })}
+          </div>
+        </nav>
+
+        <main className="flex-1 overflow-auto pb-20 lg:pb-0 print:overflow-visible print:pb-0">
+          <div className="print:p-0">
+            <Outlet />
+          </div>
+        </main>
+      </div>
+
+      {globalError && (
+        <div
+          className="fixed bottom-4 right-4 z-50 max-w-md px-4 py-3
+            bg-red-50 border border-red-200 rounded-lg shadow-lg text-sm text-red-700
+            flex items-start gap-2"
+        >
+          <span>⚠️</span>
+          <div className="flex-1">{globalError}</div>
+          <button
+            type="button"
+            onClick={() => setGlobalError(null)}
+            className="text-red-400 hover:text-red-600 ml-2"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   );
 }

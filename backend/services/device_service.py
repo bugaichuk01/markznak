@@ -17,10 +17,12 @@ async def list_devices(session: AsyncSession) -> list[Device]:
 
 
 async def create_device(session: AsyncSession, data: DeviceCreate) -> Device:
+    inn = (data.inn or "").strip() or None
     device = Device(
         name=data.name.strip(),
         oms_id=data.oms_id.strip(),
         connection_id=data.connection_id.strip(),
+        inn=inn,
     )
     session.add(device)
     await session.commit()
